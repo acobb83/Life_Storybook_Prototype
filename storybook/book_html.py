@@ -1,7 +1,8 @@
 """Interactive web version of a photobook: one self-contained HTML file.
 
 Photos are embedded (upright, resized), so the file works offline and can be shared like the
-PDF. Only the optional map loads extra resources (Leaflet and map tiles) when it is opened.
+PDF. The map uses a built-in world image, so the whole book works offline and no location is
+sent to an online map service.
 """
 from __future__ import annotations
 
@@ -11,6 +12,13 @@ from pathlib import Path
 
 from .core import chronological_photos, display_image
 from .travel import CITIES, build_trips
+
+
+WORLD_MAP = Path(__file__).parent / "assets" / "world_map.jpg"   # equirectangular, 85°N to 60°S
+
+
+def _world_map() -> str:
+    return "data:image/jpeg;base64," + base64.b64encode(WORLD_MAP.read_bytes()).decode("ascii")
 
 
 def _approximate(stop: dict) -> tuple[float, float]:
@@ -37,6 +45,8 @@ def build_book_data(project: dict, root: Path, mark_draft: bool = True,
             display_image(root, project["id"], p, max_edge=1400)).decode("ascii")
         photos.append({
             "src": src,
+            "thumb": "data:image/jpeg;base64," + base64.b64encode(
+                display_image(root, project["id"], p, max_edge=160)).decode("ascii"),
             "caption": p.get("caption", ""),
             "date": p.get("event_date") or p.get("metadata", {}).get("capture_date") or "",
             "place": p.get("place", ""),
@@ -67,6 +77,7 @@ def build_book_data(project: dict, root: Path, mark_draft: bool = True,
         "stops": stops,
         "travel": project.get("book_type") == "travel",
         "precise": bool(precise_map),
+        "world": _world_map() if stops else "",
     }
 
 
@@ -149,13 +160,34 @@ border-radius:14px;box-shadow:var(--shadow);padding:12px;margin-bottom:16px}
 background:var(--accent);border:3px solid var(--bg)}
 .tl .item img{width:160px;height:120px;object-fit:cover;border-radius:8px;cursor:zoom-in}
 .tl .when{font-weight:700}.tl .where{color:var(--muted);font-size:.9rem}
-/* Map */
-#map{height:520px;border-radius:16px;box-shadow:var(--shadow);background:#eaf3f6}
+/* Map: built-in world map (works offline), photo thumbnails pinned to places */
+.mapwrap{position:relative;width:100%;aspect-ratio:1400/563;max-height:72vh;border-radius:16px;overflow:hidden;
+box-shadow:var(--shadow);background:#E9F2F5;touch-action:none;cursor:grab;user-select:none}
+.mapwrap.drag{cursor:grabbing}
+.layer{position:absolute;left:0;top:0;transform-origin:0 0}
+.layer>img.world{display:block;width:100%;height:100%;pointer-events:none}
+.layer svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}
+.route{fill:none;stroke:var(--accent);opacity:.75}
+.spot{position:absolute;width:0;height:0;transform:scale(var(--iz,1));transform-origin:0 0}
+.spot .dot{position:absolute;left:-6px;top:-6px;width:12px;height:12px;border-radius:50%;background:var(--accent);
+border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.spot .num{position:absolute;left:8px;top:-22px;background:var(--ink);color:#fff;font:700 11px system-ui;
+border-radius:999px;padding:1px 7px;white-space:nowrap;pointer-events:none}
+.spot.sel .num{background:var(--accent)}
+.spot:hover,.spot:focus-within{z-index:6}.spot.sel{z-index:5}   /* bring a place's photos to the front */
+.ph{position:absolute;width:46px;height:46px;margin:-23px 0 0 -23px;border-radius:50%;border:3px solid #fff;padding:0;
+background:#ddd center/cover no-repeat;box-shadow:0 3px 10px rgba(31,45,74,.35);cursor:zoom-in;transition:transform .15s}
+.ph:hover,.ph:focus{transform:scale(1.35);z-index:3;outline:none}
+.leg{position:absolute;height:2px;background:rgba(255,255,255,.9);transform-origin:0 50%;pointer-events:none}
+.mapctl{position:absolute;left:12px;bottom:12px;display:flex;gap:6px;z-index:4}
+.mapctl button{width:36px;height:36px;border-radius:10px;border:1px solid var(--line);background:var(--paper);
+font:600 18px system-ui;color:var(--ink);cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.12)}
 .stops{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:14px}
-.stop{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:10px 12px;cursor:pointer}
-.stop b{display:block}.stop small{color:var(--muted)}
-.pin{background:var(--accent);color:#fff;border:2px solid #fff;border-radius:50%;width:28px;height:28px;
-display:flex;align-items:center;justify-content:center;font:700 13px system-ui;box-shadow:0 2px 6px rgba(0,0,0,.3)}
+.stop{display:flex;gap:10px;align-items:center;background:var(--paper);border:1px solid var(--line);border-radius:12px;
+padding:8px 10px;cursor:pointer;text-align:left;font:inherit;color:inherit}
+.stop.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent2)}
+.stop img{width:44px;height:44px;border-radius:8px;object-fit:cover;flex:none}
+.stop b{display:block;font-size:.95rem}.stop small{color:var(--muted)}
 .note{color:var(--muted);font-size:.85rem}
 /* Lightbox */
 .lb{position:fixed;inset:0;background:rgba(20,24,40,.92);display:none;z-index:20;align-items:center;
@@ -169,7 +201,7 @@ width:44px;height:44px;font-size:22px;cursor:pointer}
 .lb .x{top:16px;right:16px}.lb .prev{left:12px;top:50%}.lb .next{right:12px;top:50%}
 footer{max-width:1100px;margin:0 auto;padding:0 16px 30px;color:var(--muted);font-size:.8rem;
 display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
-@media (max-width:760px){.page{grid-template-columns:1fr}.page .words{padding:22px}
+@media (max-width:760px){.mapwrap{aspect-ratio:auto;height:58vh}.page{grid-template-columns:1fr}.page .words{padding:22px}
 .lb .box{grid-template-columns:1fr}.tl .item{grid-template-columns:1fr}.tl .item img{width:100%;height:180px}}
 @media print{header,.nav,.dots,footer .keys{display:none}.view{display:block!important}#v-book,#v-map,#v-timeline{display:none!important}
 .chapter{box-shadow:none;break-inside:avoid}}
@@ -186,7 +218,8 @@ display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
     <button class="btn primary" id="next">Next ›</button></div><div class="dots" id="dots"></div></section>
   <section class="view" id="v-scroll"></section>
   <section class="view" id="v-timeline"><div class="tl" id="tl"></div></section>
-  <section class="view" id="v-map"><div id="map"></div><p class="note" id="mapnote"></p><div class="stops" id="stops"></div></section>
+  <section class="view" id="v-map"><div class="mapwrap" id="mapbox" aria-label="World map of photos"></div>
+    <p class="note" id="mapnote"></p><div class="stops" id="stops"></div></section>
 </main>
 <footer><span id="draft"></span><span class="keys">Use ← → to turn pages · click a photo to enlarge · made with Life Story</span></footer>
 <div class="lb" id="lb" role="dialog" aria-modal="true"><button class="x" aria-label="Close">×</button>
@@ -276,36 +309,103 @@ B.timeline.forEach(ix => { const p = B.photos[ix], it = el("div", "item"); const
   if (p.memory) t.appendChild(el("div", "note", p.memory));
   it.appendChild(t); $("#tl").appendChild(it); });
 
-/* ---------- Map (loads Leaflet only when opened) ---------- */
-let mapReady = false;
+/* ---------- Map: built-in world map, every photo clickable ---------- */
+// The world image is an equirectangular map: x = longitude, y = latitude from 85°N to 60°S.
+const MAP = {w: 1400, h: 563, north: 85, south: -60};
+const toXY = (lat, lon) => [(lon + 180) / 360 * MAP.w, (MAP.north - Math.max(MAP.south, Math.min(MAP.north, lat))) /
+  (MAP.north - MAP.south) * MAP.h];
+let mapReady = false, mz = 1, mx = 0, my = 0, mzMin = 1, mapEl, layer, selStop = 0;
+function mapSize() { const r = mapEl.getBoundingClientRect(); return [r.width, r.height]; }
+function applyMap() {
+  const [W, H] = mapSize(), lw = W, lh = W * MAP.h / MAP.w;   // layer is the map at "zoom 1" (fits the width)
+  mx = Math.min(0, Math.max(W - lw * mz, mx)); my = Math.min(0, Math.max(H - lh * mz, my));
+  if (lh * mz < H) my = (H - lh * mz) / 2;
+  layer.style.width = lw + "px"; layer.style.height = lh + "px";
+  layer.style.transform = `translate(${mx}px,${my}px) scale(${mz})`;
+  layer.style.setProperty("--iz", 1 / mz);
+  // Keep route lines the same thickness on screen at any zoom (1 map unit = lw/MAP.w*mz pixels).
+  const unit = lw / MAP.w * mz;
+  layer.querySelectorAll(".route").forEach(r => { r.setAttribute("stroke-width", 2.5 / unit);
+    r.setAttribute("stroke-dasharray", `${6 / unit} ${7 / unit}`); });
+}
+function zoomAt(f, cx, cy) {                     // zoom by factor f around a point in the map box
+  const nz = Math.max(mzMin, Math.min(8, mz * f)); mx = cx - (cx - mx) * nz / mz; my = cy - (cy - my) * nz / mz;
+  mz = nz; applyMap();
+}
+function worldView() {                          // the whole world, filling the box's height
+  const [W, H] = mapSize(); mzMin = Math.max(1, H / (W * MAP.h / MAP.w)); mz = mzMin;
+  mx = (W - W * mz) / 2; my = 0; applyMap();
+}
+function fitStops(list) {
+  const [W, H] = mapSize(), s = W / MAP.w, pts = list.map(t => toXY(t.lat, t.lon));
+  const xs = pts.map(p => p[0] * s), ys = pts.map(p => p[1] * s);
+  const bw = Math.max(...xs) - Math.min(...xs), bh = Math.max(...ys) - Math.min(...ys);
+  // The world image is about 4 px per degree, so zooming past ~5x just looks blurry.
+  mz = Math.max(mzMin, Math.min(list.length > 1 ? 5 : 4, Math.min((W - 160) / (bw || 1), (H - 160) / (bh || 1))));
+  mx = W / 2 - (Math.min(...xs) + bw / 2) * mz; my = H / 2 - (Math.min(...ys) + bh / 2) * mz; applyMap();
+}
+function selectStop(i, zoom) {
+  selStop = i; [...document.querySelectorAll(".spot")].forEach((e, j) => e.classList.toggle("sel", j === i));
+  [...$("#stops").children].forEach((e, j) => e.classList.toggle("sel", j === i));
+  if (zoom) { fitStops([B.stops[i]]);
+    const r = mapEl.getBoundingClientRect();            // on small screens the cards sit below the map
+    if (r.top < 0 || r.bottom > innerHeight) mapEl.scrollIntoView({block: "center"}); }
+}
 function buildMap() {
-  if (mapReady) return; mapReady = true;
-  B.stops.forEach(s => { const c = el("div", "stop"); c.appendChild(el("b", null, `${s.n} · ${s.label}`));
-    c.appendChild(el("small", null, `${s.when || "Date unknown"} · ${s.photos.length} photo${s.photos.length === 1 ? "" : "s"}`));
-    c.onclick = () => openLb(s.photos[0]); $("#stops").appendChild(c); });
-  $("#mapnote").textContent = (B.precise ? "Exact photo locations are shown." : "Positions are shown at town or city level.")
-    + " Click a place to see its photos.";
-  const css = document.createElement("link"); css.rel = "stylesheet";
-  css.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"; document.head.appendChild(css);
-  const js = document.createElement("script"); js.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
-  js.onerror = () => { $("#map").style.display = "none";
-    $("#mapnote").textContent = "The map needs an internet connection. The places are listed below."; };
-  js.onload = () => {
-    const map = L.map("map", {worldCopyJump: true});
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-      {attribution: "&copy; OpenStreetMap contributors &copy; CARTO", maxZoom: 18}).addTo(map);
-    const pts = B.stops.map(s => [s.lat, s.lon]);
-    if (pts.length > 1) L.polyline(pts, {color: "#5B47C7", weight: 3, opacity: .7, dashArray: "6 8"}).addTo(map);
-    B.stops.forEach(s => {
-      const icon = L.divIcon({className: "", html: `<div class="pin">${s.n}</div>`, iconSize: [28, 28], iconAnchor: [14, 14]});
-      const pop = el("div"); pop.appendChild(el("b", null, s.label)); pop.appendChild(el("div", null, s.when || ""));
-      const im = el("img"); im.src = B.photos[s.photos[0]].src; im.style.cssText = "width:180px;border-radius:6px;margin-top:6px;cursor:zoom-in";
-      im.onclick = () => openLb(s.photos[0]); pop.appendChild(im);
-      L.marker([s.lat, s.lon], {icon}).addTo(map).bindPopup(pop);
+  if (mapReady) { applyMap(); return; } mapReady = true;
+  mapEl = $("#mapbox"); layer = el("div", "layer"); mapEl.appendChild(layer);
+  const world = el("img", "world"); world.src = B.world; world.alt = "World map"; layer.appendChild(world);
+  // Route between places in the order visited (gentle arcs)
+  const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${MAP.w} ${MAP.h}`); svg.setAttribute("preserveAspectRatio", "none");
+  B.stops.slice(1).forEach((s, k) => { const a = toXY(B.stops[k].lat, B.stops[k].lon), b = toXY(s.lat, s.lon);
+    const p = document.createElementNS(ns, "path"), lift = Math.min(80, Math.hypot(b[0] - a[0], b[1] - a[1]) / 4);
+    p.setAttribute("d", `M${a[0]},${a[1]} Q${(a[0] + b[0]) / 2},${Math.min(a[1], b[1]) - lift} ${b[0]},${b[1]}`);
+    p.setAttribute("class", "route"); svg.appendChild(p); });
+  layer.appendChild(svg);
+  // One marker per place; its photos fan out around it so each one can be clicked
+  B.stops.forEach((s, i) => {
+    const [x, y] = toXY(s.lat, s.lon), spot = el("div", "spot");
+    spot.style.left = (x / MAP.w * 100) + "%"; spot.style.top = (y / MAP.h * 100) + "%";
+    const n = s.photos.length, r = n === 1 ? 34 : 30 + 7 * n;
+    s.photos.forEach((ix, k) => {
+      const ang = n === 1 ? -Math.PI / 2 : -Math.PI / 2 + 2 * Math.PI * k / n, dx = r * Math.cos(ang), dy = r * Math.sin(ang);
+      const leg = el("div", "leg"); leg.style.width = (r - 23) + "px"; leg.style.transform = `rotate(${ang}rad)`;
+      spot.appendChild(leg);
+      const b = el("button", "ph"); b.style.left = dx + "px"; b.style.top = dy + "px";
+      b.style.backgroundImage = `url(${B.photos[ix].thumb || B.photos[ix].src})`;
+      const p = B.photos[ix]; b.title = [p.caption, p.date, s.label].filter(Boolean).join(" · ");
+      b.setAttribute("aria-label", b.title || "Photo"); b.onclick = e => { e.stopPropagation(); selectStop(i); openLb(ix); };
+      spot.appendChild(b);
     });
-    pts.length > 1 ? map.fitBounds(pts, {padding: [40, 40]}) : map.setView(pts[0], 6);
-  };
-  document.head.appendChild(js);
+    spot.appendChild(el("div", "dot")); spot.appendChild(el("div", "num", `${s.n} · ${s.label}`));
+    layer.appendChild(spot);
+    const card = el("button", "stop"); const im = el("img"); im.src = B.photos[s.photos[0]].thumb || B.photos[s.photos[0]].src;
+    im.alt = ""; card.appendChild(im); const t = el("div"); t.appendChild(el("b", null, `${s.n} · ${s.label}`));
+    t.appendChild(el("small", null, `${s.when || "Date unknown"} · ${n} photo${n === 1 ? "" : "s"}`)); card.appendChild(t);
+    card.onclick = () => selectStop(i, true); $("#stops").appendChild(card);
+  });
+  // Controls: zoom in/out, whole world, all my places
+  const ctl = el("div", "mapctl"); [["+", "Zoom in", () => { const [W, H] = mapSize(); zoomAt(1.6, W / 2, H / 2); }],
+    ["−", "Zoom out", () => { const [W, H] = mapSize(); zoomAt(1 / 1.6, W / 2, H / 2); }],
+    ["🌍", "Whole world", worldView], ["◎", "All my places", () => fitStops(B.stops)]]
+    .forEach(([t, label, fn]) => { const b = el("button", null, t); b.title = label; b.setAttribute("aria-label", label);
+      b.onclick = e => { e.stopPropagation(); fn(); }; ctl.appendChild(b); });
+  mapEl.appendChild(ctl);
+  // Drag to pan, wheel to zoom (clicks on photos still open them)
+  let drag = null;
+  mapEl.addEventListener("pointerdown", e => { if (e.target.closest(".ph,.mapctl")) return;
+    drag = {x: e.clientX, y: e.clientY, mx, my}; mapEl.setPointerCapture(e.pointerId); mapEl.classList.add("drag"); });
+  mapEl.addEventListener("pointermove", e => { if (!drag) return; mx = drag.mx + e.clientX - drag.x; my = drag.my + e.clientY - drag.y; applyMap(); });
+  const end = () => { drag = null; mapEl.classList.remove("drag"); };
+  mapEl.addEventListener("pointerup", end); mapEl.addEventListener("pointercancel", end);
+  mapEl.addEventListener("wheel", e => { e.preventDefault(); const r = mapEl.getBoundingClientRect();
+    zoomAt(e.deltaY < 0 ? 1.25 : 0.8, e.clientX - r.left, e.clientY - r.top); }, {passive: false});
+  addEventListener("resize", () => mapReady && applyMap());
+  $("#mapnote").textContent = (B.precise ? "Exact photo locations are shown." : "Places are shown at town or city level.")
+    + " Click any photo to open it. Drag to move, scroll or use + − to zoom, 🌍 for the whole world.";
+  worldView();
+  if (mzMin > 1) fitStops(B.stops);   // narrow screens: start on your places rather than a tiny world
 }
 
 /* ---------- Tabs ---------- */

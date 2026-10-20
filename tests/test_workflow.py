@@ -377,7 +377,8 @@ def test_web_book_is_self_contained_and_safe(tmp_path):
     html = generate_html(p, tmp_path)
     assert html.count("</script>") == 1                       # user text can't close the script tag
     assert "<img src=x" not in html                            # nor inject markup
-    assert html.count("data:image/jpeg;base64,") == 8          # 8 photos in chapters, embedded
+    assert html.count("data:image/jpeg;base64,") == 8 * 2 + 1  # 8 photos (+ map thumbnails) and the world map
+    assert "unpkg.com" not in html and "cartocdn" not in html  # map works offline, no location sent anywhere
     assert "<title>Trip &lt;/script&gt;" in html
     city = build_book_data(p, tmp_path)["stops"][0]
     assert (city["lat"], city["lon"]) == (35.6762, 139.6503)   # snapped to Tokyo centre by default
@@ -406,3 +407,18 @@ def test_when_and_where_filled_from_camera_once(tmp_path):
     reread_metadata(tmp_path, p)                              # an explicit re-check may fill it again
     autofill_from_camera(photo)
     assert photo["place"] == "Doha, Qatar"
+
+
+def test_share_links_can_be_created_replaced_and_turned_off(tmp_path):
+    from storybook.core import disable_share, enable_share, find_shared
+    p = make_demo_project(tmp_path)
+    token = enable_share(p)
+    save_project(tmp_path, p)
+    assert find_shared(tmp_path, token)["id"] == p["id"]
+    assert find_shared(tmp_path, "x" * 24) is None and find_shared(tmp_path, "../../etc") is None
+    new = enable_share(p, new_link=True)
+    save_project(tmp_path, p)
+    assert new != token and find_shared(tmp_path, token) is None and find_shared(tmp_path, new)
+    disable_share(p)
+    save_project(tmp_path, p)
+    assert find_shared(tmp_path, new) is None

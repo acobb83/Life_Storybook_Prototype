@@ -14,9 +14,9 @@ from storybook.book_pdf import generate_pdf
 from storybook.book_types import (BOOK_TYPES, GROUPING_TEXT, TYPE_ORDER, apply_type, get_type,
                                   local_chapters)
 from storybook.core import (InvalidPhoto, add_photo, chronological_photos, delete_project,
-                            display_image, list_projects, load_project, new_project, photo_path,
-                            photo_year, register_heif, remove_display_cache, reread_metadata,
-                            save_project, select_photos)
+                            disable_share, display_image, enable_share, find_shared, list_projects,
+                            load_project, new_project, photo_path, photo_year, register_heif,
+                            remove_display_cache, reread_metadata, save_project, select_photos)
 from storybook.demo import make_demo_project, make_travel_demo_project
 from storybook.travel import (autofill_from_camera, build_trips, camera_place_name, chapters_from_trips,
                                lookup_place)
@@ -78,7 +78,7 @@ def get_client(key: str):
 
 
 @st.dialog("Connect AI")
-def ai_key_dialog(action: str):
+def ai_key_dialog(action: str, task: str):
     st.write(f"**{action}** uses AI. Paste an OpenAI API key to continue.")
     st.caption("The key is kept only for this browser session and never saved to your photobook. "
                "Each AI request may incur API charges. Only resized photos (location data removed) "
@@ -96,16 +96,25 @@ def ai_key_dialog(action: str):
     if connect:
         if key.strip():
             st.session_state["api_key"] = key.strip()
-            rerun_notice(f"AI connected. Click “{action}” again to continue.")
+            st.session_state["pending_ai"] = task   # carry on with what was clicked
+            rerun_notice(f"AI connected. Running “{action}”…")
         else:
             st.error("Paste your OpenAI API key first.")
 
 
-def require_ai(action: str) -> bool:
-    """True when a key is available; otherwise asks for one and returns False."""
+def require_ai(action: str, task: str) -> bool:
+    """True when a key is available; otherwise asks for one (and resumes `task` after) and returns False."""
     if api_key:
         return True
-    ai_key_dialog(action)
+    ai_key_dialog(action, task)
+    return False
+
+
+def take_pending(task: str) -> bool:
+    """True once if `task` was waiting for the AI key to be entered."""
+    if api_key and st.session_state.get("pending_ai") == task:
+        st.session_state.pop("pending_ai")
+        return True
     return False
 
 
@@ -133,6 +142,47 @@ def shown(p: dict, grid: bool = False) -> bytes:
 
 def needs_location(p: dict) -> bool:
     return not p.get("metadata", {}).get("gps") and not lookup_place(p.get("place", ""))
+
+
+# -------------------- Shared link: read-only story view --------------------
+# Opening  <app address>/?story=<code>  shows just that story, with nothing editable.
+shared_token = st.query_params.get("story")
+if shared_token:
+    st.markdown("""<style>[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"],
+        [data-testid="collapsedControl"], header[data-testid="stHeader"] {display: none}
+        .block-container {max-width: 1180px; padding-top: 1rem}</style>""", unsafe_allow_html=True)
+    shared = find_shared(ROOT, shared_token)
+    if not shared or not shared.get("chapters"):
+        st.markdown('<p class="ls-title">Life Story</p>', unsafe_allow_html=True)
+        st.warning("This story link isn't active. It may have been switched off or replaced by its owner.")
+        st.stop()
+
+    @st.cache_data(show_spinner="Opening the story…", max_entries=8)
+    def shared_book(project_id: str, updated_at: str, token: str) -> str:
+        # Cached per version of the story; a new save (new updated_at) rebuilds it.
+        return generate_html(load_project(ROOT, project_id), ROOT, mark_draft=False,
+                             include_map=True, precise_map=False)
+
+    components.html(shared_book(shared["id"], shared.get("updated_at", ""), shared_token),
+                    height=880, scrolling=True)
+    st.caption("Shared with Life Story · read-only")
+    st.stop()
+
+
+def share_url(token: str) -> tuple[str, bool]:
+    """The link to send, and whether it only works on this computer."""
+    base = os.environ.get("LIFESTORY_PUBLIC_URL", "").strip()
+    if not base:
+        base = str(getattr(st.context, "url", "") or "")
+    if not base:
+        headers = getattr(st.context, "headers", {}) or {}
+        host = headers.get("Host") or headers.get("host") or "localhost:8501"
+        proto = headers.get("X-Forwarded-Proto") or headers.get("x-forwarded-proto") or \
+            ("http" if host.startswith(("localhost", "127.")) else "https")
+        base = f"{proto}://{host}/"
+    base = base.split("?")[0].split("#")[0].rstrip("/")
+    local = any(x in base for x in ("://localhost", "://127.", "://0.0.0.0"))
+    return f"{base}/?story={token}", local
 
 
 # -------------------- Sidebar / photobook selection --------------------
@@ -229,7 +279,15 @@ if choosing:
         col.markdown(f'<div class="ls-card"><span class="ls-icon {cls}">{icon}</span><b>{head}</b>'
                      f'<div class="ls-sub" style="margin-left:42px">{sub}</div></div>', unsafe_allow_html=True)
     st.write("")
-    st.subheader("What would you like to make?")
+    st.subheader("1 · Give your photobook a title")
+    t1, t2 = st.columns(2)
+    new_title = t1.text_input("Title", key="new_book_title",
+                              placeholder="e.g. Sophie's 18th, Our Japan Trip, Level 3 Fit-out")
+    new_subtitle = t2.text_input("Subtitle (optional)", key="new_book_subtitle",
+                                 placeholder="e.g. Eighteen years of moments worth remembering")
+    st.caption("You can change both later in step 3.")
+    title_missing = st.empty()
+    st.subheader("2 · What kind of photobook is it?")
     st.caption("Your choice shapes the questions, how chapters are grouped and how the story is shown. "
                "You can change it later.")
     for row in range(0, len(TYPE_ORDER), 4):
@@ -242,13 +300,20 @@ if choosing:
                 st.caption(f"Good for: {t['good_for']}")
                 if st.button("Start this book", key=f"start_{key}", use_container_width=True,
                              type="primary"):
-                    target = project if (not project.get("book_type") and not project["photos"]) else new_project()
-                    target["title"], target["subtitle"] = "", ""
-                    apply_type(target, key)
-                    save_project(ROOT, target)
-                    st.session_state["active_project"] = target["id"]
-                    st.session_state.pop("choosing_type", None)
-                    rerun_notice(f"Started a new {t['label'].lower()} photobook. Bring in your photos to begin.")
+                    if not new_title.strip():
+                        title_missing.error("Please give your photobook a title first (step 1 above).")
+                    else:
+                        target = project if (not project.get("book_type") and not project["photos"]) else new_project()
+                        target["title"], target["subtitle"] = "", ""
+                        apply_type(target, key)
+                        target["title"] = new_title.strip()[:150]
+                        target["subtitle"] = new_subtitle.strip()[:200] or target["subtitle"]
+                        save_project(ROOT, target)
+                        st.session_state["active_project"] = target["id"]
+                        for k in ("choosing_type", "new_book_title", "new_book_subtitle"):
+                            st.session_state.pop(k, None)
+                        rerun_notice(f"Started “{target['title']}”, a {t['label'].lower()}. "
+                                     "Bring in your photos to begin.")
     if st.session_state.get("choosing_type") and project.get("book_type"):
         if st.button("Cancel"):
             st.session_state.pop("choosing_type", None)
@@ -283,7 +348,7 @@ STEP_HELP = [
     "Add the photos for this photobook. When they're in, go to the next step.",
     "Check when and where each photo was taken and add what you remember. Notes are optional, but "
     "they're what the story is built from.",
-    f"Say what story you'd like, then write a draft (no AI) or write it with AI. Chapters for a "
+    f"Check the book's title, say what story you'd like, then write a draft (no AI) or write it with AI. Chapters for a "
     f"{btype['label'].lower()} are grouped by {GROUPING_TEXT[btype['grouping']]}.",
     "See your story as a timeline, map, photo strip or chapters to read. Go back to step 3 to edit it.",
     "Make a printable PDF and/or an interactive web book you can open in any browser, then download them.",
@@ -390,9 +455,9 @@ if step == 2:
     else:
         unlocated = [p for p in photos_all if needs_location(p)]
         a1, a2 = st.columns(2)
-        if a1.button("✨ Describe all photos with AI", use_container_width=True,
-                     help="Sends one reduced-size photo at a time with its camera data (date, location) removed.") \
-                and require_ai("Describe all photos with AI"):
+        if (a1.button("✨ Describe all photos with AI", use_container_width=True,
+                      help="Sends one reduced-size photo at a time with its camera data (date, location) removed.")
+                or take_pending("describe_all")) and require_ai("Describe all photos with AI", "describe_all"):
             progress = st.progress(0)
             errors = []
             client = get_client(api_key)
@@ -410,11 +475,11 @@ if step == 2:
                 st.warning("Some descriptions did not complete: " + " | ".join(errors[:4]))
             else:
                 rerun_notice("AI descriptions are ready. Please check each one.")
-        if a2.button(f"📍 Suggest places with AI ({len(unlocated)} without a location)",
-                     disabled=not unlocated, use_container_width=True,
-                     help="For photos with no camera location and no recognised place. "
-                          "Suggestions are only saved when you accept them.") \
-                and require_ai("Suggest places with AI"):
+        if (a2.button(f"📍 Suggest places with AI ({len(unlocated)} without a location)",
+                      disabled=not unlocated, use_container_width=True,
+                      help="For photos with no camera location and no recognised place. "
+                           "Suggestions are only saved when you accept them.")
+                or (take_pending("suggest_all") and unlocated)) and require_ai("Suggest places with AI", "suggest_all"):
             progress = st.progress(0)
             errors, found = [], 0
             client = get_client(api_key)
@@ -469,8 +534,8 @@ if step == 2:
                     if p.get("question"):
                         st.info("💬 " + p["question"])
                     b_desc, b_place = st.columns(2)
-                    if b_desc.button("✨ Describe", key="analyse_" + p["id"], use_container_width=True) \
-                            and require_ai("Describe"):
+                    if (b_desc.button("✨ Describe", key="analyse_" + p["id"], use_container_width=True)
+                            or take_pending("describe_" + p["id"])) and require_ai("Describe", "describe_" + p["id"]):
                         described = False
                         try:
                             with st.spinner("Looking at visible details..."):
@@ -485,8 +550,10 @@ if step == 2:
                             st.error(f"Image description failed: {exc}")
                         if described:
                             rerun_notice("Description ready. Please check it and add your memory.")
-                    if not gps and b_place.button("📍 Suggest place", key="place_" + p["id"],
-                                                  use_container_width=True) and require_ai("Suggest place"):
+                    if not gps and (b_place.button("📍 Suggest place", key="place_" + p["id"],
+                                                   use_container_width=True)
+                                    or take_pending("place_" + p["id"])) \
+                            and require_ai("Suggest place", "place_" + p["id"]):
                         suggested = False
                         try:
                             with st.spinner("Looking for landmarks, signs and other clues..."):
@@ -564,6 +631,18 @@ if step == 3:
     st.caption(f"Chapters for a {btype['label'].lower()} are grouped by **{GROUPING_TEXT[btype['grouping']]}**.")
     if not photos_all:
         st.info("Bring in some photos first.")
+    with st.form("book_title_form"):
+        st.markdown("**📘 Book title**")
+        c_title, c_sub = st.columns(2)
+        title = c_title.text_input("Title", value=project.get("title", ""))
+        subtitle = c_sub.text_input("Subtitle", value=project.get("subtitle", ""))
+        if st.form_submit_button("Save title"):
+            if not title.strip():
+                st.error("The title can't be empty.")
+            else:
+                project.update({"title": title.strip()[:150], "subtitle": subtitle.strip()[:200]})
+                save(project)
+                rerun_notice(f"Title changed to “{project['title']}”.")
     saved_filter = project.get("story_filter", {})
     with st.form("story_request_form"):
         request = st.text_input("What story would you like?", value=project.get("story_request", ""),
@@ -585,15 +664,13 @@ if step == 3:
         current_voice = project.get("voice", btype["voice"])
         voice = st.selectbox("Writing style", voice_options,
                              index=voice_options.index(current_voice) if current_voice in voice_options else 0)
-        with st.expander("Book details", expanded=False):
-            title = st.text_input("Title", value=project.get("title", ""))
-            subtitle = st.text_input("Subtitle", value=project.get("subtitle", ""))
+        with st.expander("More book details (dedication, opening note, writer directions)", expanded=False):
             dedication = st.text_input("Dedication (optional)", value=project.get("dedication", ""))
             intro = st.text_area("Opening note (optional)", value=project.get("intro", ""), height=86)
             instructions = st.text_area("Extra directions for the writer", value=project.get("instructions", ""),
                                         placeholder="e.g. Write in first person. Keep the language simple for grandchildren.")
         if st.form_submit_button("Save request"):
-            project.update({"story_request": request, "voice": voice, "title": title, "subtitle": subtitle,
+            project.update({"story_request": request, "voice": voice,
                             "dedication": dedication, "intro": intro, "instructions": instructions,
                             "story_filter": {"years": list(year_range) if year_range else None,
                                              "places": places, "include_undated": include_undated}})
@@ -637,10 +714,10 @@ if step == 3:
                            "They're sent to OpenAI but the writer is told never to print them.")
             else:
                 st.caption("Sends e.g. “near Kyoto, Japan”. Exact coordinates stay on this computer.")
-        if st.button("✨ Write with AI", use_container_width=True,
-                     disabled=not (matching and consent),
-                     help="Tick the box above first. Replaces the current chapters.") \
-                and require_ai("Write with AI"):
+        if (st.button("✨ Write with AI", use_container_width=True,
+                      disabled=not (matching and consent),
+                      help="Tick the box above first. Replaces the current chapters.")
+                or (take_pending("write_ai") and matching and consent)) and require_ai("Write with AI", "write_ai"):
             try:
                 with st.spinner("Writing your story from your memories..."):
                     project["chapters"] = generate_ai_story(get_client(api_key), model, story_project,
@@ -884,8 +961,9 @@ if step == 5:
             st.caption("One file that opens in any browser: turn the pages, scroll, see a timeline and map, "
                        "and click photos to enlarge. Share it like the PDF.")
             has_places = bool(build_trips([p for p in photos_all if p["id"] in used])[0])
-            include_map = st.checkbox("Include a map of places", value=has_places, disabled=not has_places,
-                                      help="Needs an internet connection when viewed (to load map tiles).")
+            include_map = st.checkbox("Include a world map of photos", value=has_places, disabled=not has_places,
+                                      help="Every photo with a place is pinned on a built-in world map; click one "
+                                           "to open it. Works offline.")
             precise_map = False
             if include_map:
                 precise_map = st.checkbox("Show exact photo locations", value=False,
@@ -906,6 +984,35 @@ if step == 5:
                 st.download_button("⬇ Download web book (.html)", data=html_doc.encode("utf-8"),
                                    file_name=f"{safe_name}.html", mime="text/html", use_container_width=True)
                 st.caption(f"Ready · {len(html_doc.encode('utf-8')) / 1024:.0f} KB · photos included in the file")
+        with st.container(border=True):
+            st.markdown("**🔗 Share link**")
+            st.caption("A link to a read-only version of this story in this app: the interactive book, "
+                       "timeline and map, with nothing editable. Anyone with the link can view it.")
+            if project.get("share_enabled") and project.get("share_token"):
+                link, local_only = share_url(project["share_token"])
+                st.code(link, language=None)
+                st.caption("Copy it with the button at the right of the box. Changes you make to the story "
+                           "show up on the link the next time someone opens it.")
+                if local_only:
+                    st.warning("This app is running on your own computer, so the link only works here. "
+                               "Run the app somewhere others can reach (or set LIFESTORY_PUBLIC_URL) to share it.")
+                l1, l2, l3 = st.columns(3)
+                l1.link_button("Open shared view", link, use_container_width=True)
+                if l2.button("New link", use_container_width=True,
+                             help="Makes a new link and stops the old one working."):
+                    enable_share(project, new_link=True)
+                    save(project)
+                    rerun_notice("Made a new share link. The old link no longer works.")
+                if l3.button("Turn off link", use_container_width=True):
+                    disable_share(project)
+                    save(project)
+                    rerun_notice("Share link turned off. Anyone opening it will see that it's no longer active.")
+                st.caption("Places are shown at town or city level on shared links.")
+            else:
+                if st.button("Create share link", type="primary"):
+                    enable_share(project)
+                    save(project)
+                    rerun_notice("Share link created. Copy it below.")
         if html_doc := st.session_state.get("rendered_html"):
             st.markdown("#### Preview of the web book")
             st.caption("This is exactly what people will see when they open the file.")

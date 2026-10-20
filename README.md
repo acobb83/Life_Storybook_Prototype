@@ -91,10 +91,19 @@ Step 5 can also export the story as **one self-contained `.html` file** that ope
 - **Book**: page through a cover, opening note, one page per chapter and an ending. Use the buttons, the chapter menu, ← → keys or swipe on a phone.
 - **Scroll**: the whole story on one page.
 - **Timeline**: every photo in date order with its place and memory.
-- **Map** (optional): numbered places joined in visit order, with photo pop-ups. Shown at **town/city level by default**; exact locations only if you tick that option. The map loads Leaflet and CARTO/OpenStreetMap tiles when opened, so it needs an internet connection; without one it lists the places instead.
+- **Map** (optional): a **built-in world map** with **every photo pinned as a clickable thumbnail**. Photos from the same place fan out around it, and clicking one opens it in the photo viewer. Places are joined by dashed route lines in visit order and listed as cards underneath; click a card to zoom to that place. Drag to pan, scroll or use + − to zoom, 🌍 for the whole world. Shown at **town/city level by default**; exact locations only if you tick that option. The map is an image inside the file (`storybook/assets/world_map.jpg`), so it **works offline and never sends locations to a map service**.
 - **Photo viewer**: click any photo for a large view with its date, place, people and memory.
 
-Photos are embedded (upright and resized), so the rest works offline. All user text is inserted as plain text, so it can't run as code. The app shows a live preview of the web book under the download buttons. Code: `storybook/book_html.py`.
+Photos and the map are embedded, so the whole book works offline. All user text is inserted as plain text, so it can't run as code. The app shows a live preview of the web book under the download buttons. Code: `storybook/book_html.py`.
+
+## Share link
+
+In step 5, **Create share link** gives a private link back to this app, e.g. `https://your-app/?story=qzis6atC…`. Opening it shows a **read-only** version of that story (the interactive book, scroll, timeline and map) with no sidebar or editing. The code in the link is long and random so it can't be guessed. **New link** replaces it, so the old one stops working, and **Turn off link** switches sharing off. Shared views always show places at town/city level.
+
+- The link only works while the app is running somewhere others can reach. If it's running on your own computer (`localhost`), the app warns that the link only works there.
+- If the app sits behind a proxy and detects the wrong address, set `LIFESTORY_PUBLIC_URL` (e.g. `https://life-story.example.com`).
+- On Streamlit Community Cloud, saved stories (and so links) are lost when the app restarts. Fine for a demo; production would use the deck's Azure storage and sign-in.
+- Anyone with the link can see the photos, places and memories in that story.
 
 ## AI place suggestions
 

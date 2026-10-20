@@ -228,6 +228,35 @@ def list_projects(root: Path) -> list[dict]:
     return sorted(result, key=lambda x: x["updated_at"], reverse=True)
 
 
+def enable_share(project: dict, new_link: bool = False) -> str:
+    """Turn on a read-only share link for this photobook; returns its secret token."""
+    import secrets
+    if new_link or not project.get("share_token"):
+        project["share_token"] = secrets.token_urlsafe(18)
+    project["share_enabled"] = True
+    return project["share_token"]
+
+
+def disable_share(project: dict) -> None:
+    project["share_enabled"] = False
+
+
+def find_shared(root: Path, token: str) -> dict | None:
+    """The photobook whose share link matches `token`, if that link is switched on."""
+    import secrets
+    if not token or not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", token) or not Path(root).exists():
+        return None
+    for file in Path(root).glob("*/project.json"):
+        try:
+            project = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        saved = project.get("share_token") or ""
+        if project.get("share_enabled") and saved and secrets.compare_digest(saved, token):
+            return project
+    return None
+
+
 def delete_project(root: Path, project_id: str) -> None:
     shutil.rmtree(_folder(root, project_id), ignore_errors=True)
 
