@@ -144,6 +144,7 @@ def list_projects(root: Path) -> list[dict]:
             project = json.loads(file.read_text(encoding="utf-8"))
             if re.fullmatch(r"[0-9a-f]{32}", project.get("id", "")):
                 result.append({"id": project["id"], "title": project.get("title", "Untitled"),
+                               "book_type": project.get("book_type", ""),
                                "updated_at": project.get("updated_at", "")})
         except (OSError, ValueError):
             continue

@@ -1,18 +1,21 @@
 """Life Story prototype. Run with: streamlit run app.py"""
 from __future__ import annotations
 
+import html
 import os
 from pathlib import Path
 
 import streamlit as st
 
-from storybook.ai import DEFAULT_MODEL, analyse_photo, generate_ai_story, generate_local_story
+from storybook.ai import DEFAULT_MODEL, analyse_photo, generate_ai_story, suggest_place
 from storybook.book_pdf import generate_pdf
+from storybook.book_types import (BOOK_TYPES, GROUPING_TEXT, TYPE_ORDER, apply_type, get_type,
+                                  local_chapters)
 from storybook.core import (InvalidPhoto, add_photo, chronological_photos, delete_project,
                             list_projects, load_project, new_project, photo_path, photo_year,
                             register_heif, save_project, select_photos)
 from storybook.demo import make_demo_project, make_travel_demo_project
-from storybook.travel import build_trips, chapters_from_trips
+from storybook.travel import build_trips, chapters_from_trips, lookup_place
 
 st.set_page_config(page_title="Life Story", page_icon="📖", layout="wide")
 ROOT = Path(os.environ.get("LIFESTORY_DATA_DIR", Path(__file__).parent / "data")).expanduser().resolve()
@@ -25,7 +28,9 @@ st.markdown("""<style>
 h1, h2, h3, h4 {color: #1F2D4A}
 .ls-title {font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-weight: 700;
            font-size: 3rem; line-height: 1.05; color: #1F2D4A; margin: 0}
-.ls-tagline {font-family: Georgia, serif; font-style: italic; color: #53617B; font-size: 1.15rem;
+.ls-book-title {font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-weight: 700;
+                font-size: 2.3rem; line-height: 1.1; color: #1F2D4A; margin: 0}
+.ls-tagline {font-family: Georgia, serif; font-style: italic; color: #53617B; font-size: 1.1rem;
              margin: .35rem 0 1.1rem 0}
 .ls-kicker {letter-spacing: .18em; font-size: .72rem; color: #5B47C7; font-weight: 700;
             text-transform: uppercase; margin-bottom: .35rem}
@@ -36,6 +41,7 @@ h1, h2, h3, h4 {color: #1F2D4A}
 .ls-icon {display: inline-flex; width: 34px; height: 34px; border-radius: 50%; align-items: center;
           justify-content: center; margin-right: 8px; font-size: 1rem}
 .ls-step1 {background: #F8DCCB} .ls-step2 {background: #D3E8DC} .ls-step3 {background: #E2DBEF}
+.ls-type-icon {font-size: 2rem; line-height: 1}
 .ls-source {background: #FFFFFF; border: 1px solid #E6DFEF; border-radius: 12px; padding: 12px;
             text-align: center; min-height: 112px}
 .ls-source .ls-name {font-weight: 700; color: #1F2D4A; margin-top: 4px}
@@ -72,7 +78,11 @@ def story_photo_ids(project: dict) -> list[str]:
     return ids or [p["id"] for p in chronological_photos(project)]
 
 
-# -------------------- Sidebar / project selection --------------------
+def needs_location(p: dict) -> bool:
+    return not p.get("metadata", {}).get("gps") and not lookup_place(p.get("place", ""))
+
+
+# -------------------- Sidebar / photobook selection --------------------
 with st.sidebar:
     st.markdown('<p class="ls-title">Life Story</p>', unsafe_allow_html=True)
     st.caption("Human memories. Thoughtfully preserved.")
@@ -84,30 +94,34 @@ with st.sidebar:
     project_ids = [p["id"] for p in projects]
     if st.session_state.get("active_project") not in project_ids:
         st.session_state["active_project"] = project_ids[0]
-    label_by_id = {p["id"]: p["title"] for p in projects}
-    pick = st.selectbox("Your story collections", project_ids,
+    label_by_id = {p["id"]: f"{BOOK_TYPES[p['book_type']]['icon'] if p.get('book_type') in BOOK_TYPES else '✳️'} "
+                            f"{p['title']}" for p in projects}
+    pick = st.selectbox("Your photobooks", project_ids,
                         index=project_ids.index(st.session_state["active_project"]),
                         format_func=lambda key: label_by_id.get(key, "Untitled"))
     if pick != st.session_state["active_project"]:
         st.session_state["active_project"] = pick
         st.session_state.pop("rendered_pdf", None)
+        st.session_state.pop("choosing_type", None)
         st.rerun()
-    if st.button("＋ New collection", use_container_width=True):
-        p = new_project()
-        save_project(ROOT, p)
-        st.session_state["active_project"] = p["id"]
-        rerun_notice("Created a new collection.")
-    if st.button("✨ Load fictional demo", use_container_width=True,
-                 help="Creates a separate collection with four synthetic illustrations and sample memories."):
+    if st.button("＋ New photobook", use_container_width=True, type="primary"):
+        st.session_state["choosing_type"] = True
+        st.rerun()
+    st.caption("Or try a fictional demo:")
+    d1, d2 = st.columns(2)
+    if d1.button("📖 Life", use_container_width=True,
+                 help="A fictional family life story with four synthetic illustrations."):
         sample = make_demo_project(ROOT)
         st.session_state["active_project"] = sample["id"]
-        rerun_notice("Loaded a fictional example. All artwork and memories are synthetic.")
-    if st.button("🌏 Load travel demo", use_container_width=True,
-                 help="Creates a separate collection of fictional trips (Tokyo, Kyoto, Singapore, Sydney, Paris)."):
+        st.session_state.pop("choosing_type", None)
+        rerun_notice("Loaded a fictional life story. All artwork and memories are synthetic.")
+    if d2.button("🌏 Travel", use_container_width=True,
+                 help="Fictional trips through Tokyo, Kyoto, Singapore, Sydney and Paris."):
         sample = make_travel_demo_project(ROOT)
         st.session_state["active_project"] = sample["id"]
         st.session_state["travel_stop"] = 1
-        rerun_notice("Loaded a fictional travel story. Open 4 · Story views → Travels.")
+        st.session_state.pop("choosing_type", None)
+        rerun_notice("Loaded a fictional travel story. Open 4 · Story views to see the map.")
     st.divider()
     with st.expander("AI settings (optional)", expanded=False):
         api_key = st.text_input("OpenAI API key", type="password", key="openai_key",
@@ -116,31 +130,83 @@ with st.sidebar:
         model = st.text_input("Model", value=DEFAULT_MODEL, help="An image-capable OpenAI Responses API model.")
         st.caption("AI runs only when you click an AI button. API usage may incur charges.")
     st.caption("🟢 AI connected" if api_key else "⚪ AI off: local mode")
-    with st.expander("Delete this collection", expanded=False):
+
+project = load_project(ROOT, st.session_state["active_project"])
+
+with st.sidebar:
+    if project.get("book_type"):
+        with st.expander("Change photobook type", expanded=False):
+            current = project["book_type"] if project["book_type"] in BOOK_TYPES else "life"
+            new_type = st.selectbox("Type", TYPE_ORDER, index=TYPE_ORDER.index(current),
+                                    format_func=lambda k: f"{BOOK_TYPES[k]['icon']} {BOOK_TYPES[k]['label']}")
+            st.caption("Changes the prompts, chapter grouping and main view. Existing chapters are kept.")
+            if st.button("Apply type", use_container_width=True, disabled=new_type == current):
+                apply_type(project, new_type)
+                save(project)
+                rerun_notice(f"Changed to a {BOOK_TYPES[new_type]['label'].lower()} photobook.")
+    with st.expander("Delete this photobook", expanded=False):
         confirm = st.checkbox("Permanently delete its saved photos and story text", key="delete_confirm")
-        if st.button("Delete collection", disabled=not confirm, type="secondary", use_container_width=True):
+        if st.button("Delete photobook", disabled=not confirm, type="secondary", use_container_width=True):
             delete_project(ROOT, st.session_state["active_project"])
             st.session_state.pop("active_project", None)
-            rerun_notice("Collection deleted from local storage.")
+            rerun_notice("Photobook deleted from local storage.")
     st.divider()
     st.caption("2026 AI Hackathon · Team 2 · Prototype\n\nSingle-user local demo: no login or encryption at rest.")
 
-project = load_project(ROOT, st.session_state["active_project"])
 if notice := st.session_state.pop("flash_notice", ""):
     st.success(notice)
 
-# ------------------------------- Hero -------------------------------
-st.markdown('<p class="ls-title">Life Story</p>'
-            '<p class="ls-tagline">Your memories, gathered from everywhere and told as the journey they are.</p>',
+# ------------------------- Choose a photobook type -------------------------
+choosing = st.session_state.get("choosing_type") or (not project.get("book_type") and not project["photos"])
+if choosing:
+    st.markdown('<p class="ls-title">Life Story</p>'
+                '<p class="ls-tagline">Your memories, gathered from everywhere and told as the journey they are.</p>',
+                unsafe_allow_html=True)
+    h1, h2, h3 = st.columns(3)
+    for col, cls, icon, head, sub in (
+            (h1, "ls-step1", "🔗", "Link your accounts", "OneDrive, Google Photos and uploads"),
+            (h2, "ls-step2", "👁", "Each memory is understood", "When, where and what happened"),
+            (h3, "ls-step3", "✨", "Ask for a story", "Relive a trip, a year or a milestone")):
+        col.markdown(f'<div class="ls-card"><span class="ls-icon {cls}">{icon}</span><b>{head}</b>'
+                     f'<div class="ls-sub" style="margin-left:42px">{sub}</div></div>', unsafe_allow_html=True)
+    st.write("")
+    st.subheader("What would you like to make?")
+    st.caption("Your choice shapes the questions, how chapters are grouped and how the story is shown. "
+               "You can change it later.")
+    for row in range(0, len(TYPE_ORDER), 4):
+        for col, key in zip(st.columns(4), TYPE_ORDER[row:row + 4]):
+            t = BOOK_TYPES[key]
+            with col.container(border=True):
+                st.markdown(f'<div class="ls-type-icon">{t["icon"]}</div>', unsafe_allow_html=True)
+                st.markdown(f"**{t['label']}**")
+                st.write(t["blurb"])
+                st.caption(f"Good for: {t['good_for']}")
+                if st.button("Start this book", key=f"start_{key}", use_container_width=True,
+                             type="primary"):
+                    target = project if (not project.get("book_type") and not project["photos"]) else new_project()
+                    target["title"], target["subtitle"] = "", ""
+                    apply_type(target, key)
+                    save_project(ROOT, target)
+                    st.session_state["active_project"] = target["id"]
+                    st.session_state.pop("choosing_type", None)
+                    rerun_notice(f"Started a new {t['label'].lower()} photobook. Bring in your photos to begin.")
+    if st.session_state.get("choosing_type") and project.get("book_type"):
+        if st.button("Cancel"):
+            st.session_state.pop("choosing_type", None)
+            st.rerun()
+    st.stop()
+
+# A photobook from before types existed: treat it as a life story.
+if not project.get("book_type"):
+    apply_type(project, "life", set_defaults=False)
+    save(project)
+btype = get_type(project)
+
+# ------------------------------- Header -------------------------------
+st.markdown(f'<div class="ls-kicker">{btype["icon"]} {btype["label"]}</div>'
+            f'<p class="ls-book-title">{html.escape(project.get("title") or btype["title"])}</p>'
+            f'<p class="ls-tagline">{html.escape(project.get("subtitle") or btype["blurb"])}</p>',
             unsafe_allow_html=True)
-h1, h2, h3 = st.columns(3)
-for col, cls, icon, head, sub in (
-        (h1, "ls-step1", "🔗", "Link your accounts", "OneDrive, Google Photos and uploads"),
-        (h2, "ls-step2", "👁", "Each memory is understood", "When, where and what happened"),
-        (h3, "ls-step3", "✨", "Ask for a story", "Relive a trip, a year or a milestone")):
-    col.markdown(f'<div class="ls-card"><span class="ls-icon {cls}">{icon}</span><b>{head}</b>'
-                 f'<div class="ls-sub" style="margin-left:42px">{sub}</div></div>', unsafe_allow_html=True)
-st.write("")
 photos_all = project["photos"]
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Memories", len(photos_all))
@@ -168,6 +234,12 @@ with t_link:
                      f'<div class="ls-name">{name}</div><div class="ls-via">{via}</div>{badge}</div>',
                      unsafe_allow_html=True)
     st.caption("This prototype supports uploads. Account connectors are part of the full Life Story design.")
+    if project["book_type"] == "travel":
+        st.caption("📍 Tip: phone photos usually carry their location, which puts them straight on the map.")
+    elif project["book_type"] == "business":
+        st.caption("🏢 Tip: check you have permission to use client, site and staff photos before adding them.")
+    elif project["book_type"] == "family":
+        st.caption("🖨️ Tip: scanned prints work well. Add an approximate date such as 'circa 1965' in the next step.")
     st.write("")
     uploaded = st.file_uploader("Upload photographs", type=["jpg", "jpeg", "png", "webp", "heic"],
                                 accept_multiple_files=True,
@@ -202,17 +274,19 @@ with t_understand:
     st.markdown('<div class="ls-kicker">Enrich</div>', unsafe_allow_html=True)
     st.subheader("Each memory is understood")
     e1, e2, e3 = st.columns(3)
-    e1.markdown('<div class="ls-card"><b>📍 When & where</b><div class="ls-sub">Read from the photo\'s camera data. '
-                'Camera clocks can be wrong, so you confirm it.</div></div>', unsafe_allow_html=True)
+    e1.markdown('<div class="ls-card"><b>📍 When & where</b><div class="ls-sub">From the photo\'s camera data, '
+                'or a place AI suggests from clear clues. You confirm it.</div></div>', unsafe_allow_html=True)
     e2.markdown('<div class="ls-card"><b>👁 Photo insights</b><div class="ls-sub">AI describes only what is visible. '
                 'It never identifies people.</div></div>', unsafe_allow_html=True)
     e3.markdown('<div class="ls-card"><b>💬 Your words</b><div class="ls-sub">Names, places and what it meant. '
                 'These are what the story is built from.</div></div>', unsafe_allow_html=True)
     st.write("")
     if not photos_all:
-        st.info("Bring in your first photos in **1 · Link & bring in**, or load the fictional demo from the sidebar.")
+        st.info("Bring in your first photos in **1 · Link & bring in**, or load a demo from the sidebar.")
     else:
-        if st.button("✨ Describe all photos with AI", disabled=not bool(api_key),
+        unlocated = [p for p in photos_all if needs_location(p)]
+        a1, a2 = st.columns(2)
+        if a1.button("✨ Describe all photos with AI", disabled=not bool(api_key), use_container_width=True,
                      help="Sends one reduced-size, EXIF-stripped photo at a time; GPS is never sent."):
             progress = st.progress(0)
             errors = []
@@ -231,26 +305,56 @@ with t_understand:
                 st.warning("Some descriptions did not complete: " + " | ".join(errors[:4]))
             else:
                 rerun_notice("AI descriptions are ready. Please check each one.")
+        if a2.button(f"📍 Suggest places with AI ({len(unlocated)} without a location)",
+                     disabled=not (api_key and unlocated), use_container_width=True,
+                     help="For photos with no camera location and no recognised place. "
+                          "Suggestions are only saved when you accept them."):
+            progress = st.progress(0)
+            errors, found = [], 0
+            client = get_client(api_key)
+            for idx, p in enumerate(unlocated):
+                try:
+                    p["place_suggestion"] = suggest_place(client, model, photo_path(ROOT, project["id"], p))
+                    found += bool(p["place_suggestion"]["place"])
+                    save(project)
+                except Exception as exc:
+                    errors.append(f"{p['filename']}: {exc}")
+                progress.progress((idx + 1) / len(unlocated))
+            if errors:
+                st.warning("Some suggestions did not complete: " + " | ".join(errors[:4]))
+            else:
+                rerun_notice(f"AI suggested a place for {found} of {len(unlocated)} photos. "
+                             "Open each photo below to accept or dismiss.")
         if not api_key:
-            st.caption("Add an API key under **AI settings** in the sidebar to use AI descriptions.")
+            st.caption("Add an API key under **AI settings** in the sidebar to use AI descriptions and place suggestions.")
         for p in chronological_photos(project):
             friendly = p.get("caption", "").strip() or p["filename"]
             done = "✅" if p.get("memory", "").strip() else "📷"
-            with st.expander(f"{done} {friendly}", expanded=False):
+            flag = " · 📍 place suggested" if p.get("place_suggestion", {}).get("place") else ""
+            with st.expander(f"{done} {friendly}{flag}", expanded=False):
                 left, right = st.columns([1, 1.25], gap="large")
                 with left:
                     st.image(str(photo_path(ROOT, project["id"], p)), use_container_width=True)
                     m = p["metadata"]
                     gps = m.get("gps")
-                    st.markdown("**When & where (from the camera)**")
-                    st.caption(f"Date: {m.get('capture_date') or 'Not available'} (unverified)  \n"
-                               f"Location: " + (f"{gps['latitude']}, {gps['longitude']} (stays on this computer)"
-                                                if gps else "Not available") + "  \n"
-                               f"Camera: {m.get('camera') or 'Not available'}  \n"
-                               f"Size: {m.get('dimensions', ['?', '?'])[0]} × {m.get('dimensions', ['?', '?'])[1]} px")
+                    known = lookup_place(p.get("place", ""))
+                    if gps:
+                        on_map = f"Camera location {gps['latitude']}, {gps['longitude']} (stays on this computer)"
+                    elif known:
+                        on_map = f"{known['name']}" + (f", {known['country']}" if known["country"] != known["name"] else "") + \
+                                 " (from the place entered)"
+                    else:
+                        on_map = "Not on the map yet"
+                    st.markdown("**When & where**")
+                    st.caption(f"Camera date: {m.get('capture_date') or 'Not available'} (unverified)  \n"
+                               f"Map: {on_map}  \n"
+                               f"Camera: {m.get('camera') or 'Not available'}")
                     if p.get("question"):
                         st.info("💬 " + p["question"])
-                    if st.button("✨ Describe with AI", key="analyse_" + p["id"], disabled=not bool(api_key)):
+                    b_desc, b_place = st.columns(2)
+                    if b_desc.button("✨ Describe", key="analyse_" + p["id"], disabled=not bool(api_key),
+                                     use_container_width=True):
+                        described = False
                         try:
                             with st.spinner("Looking at visible details..."):
                                 result = analyse_photo(get_client(api_key), model,
@@ -259,20 +363,58 @@ with t_understand:
                             p["question"] = result.get("question", "")
                             p["analyzed"] = True
                             save(project)
-                            rerun_notice("Description ready. Please check it and add your memory.")
+                            described = True
                         except Exception as exc:
                             st.error(f"Image description failed: {exc}")
+                        if described:
+                            rerun_notice("Description ready. Please check it and add your memory.")
+                    if not gps and b_place.button("📍 Suggest place", key="place_" + p["id"],
+                                                  disabled=not bool(api_key), use_container_width=True):
+                        suggested = False
+                        try:
+                            with st.spinner("Looking for landmarks, signs and other clues..."):
+                                p["place_suggestion"] = suggest_place(get_client(api_key), model,
+                                                                      photo_path(ROOT, project["id"], p))
+                            save(project)
+                            suggested = True
+                        except Exception as exc:
+                            st.error(f"Place suggestion failed: {exc}")
+                        if suggested:
+                            st.rerun()
+                    sug = p.get("place_suggestion")
+                    if sug:
+                        if sug.get("place"):
+                            st.info(f"📍 Possibly **{sug['place']}** ({sug.get('confidence', 'low')} confidence)  \n"
+                                    f"{sug.get('evidence', '')}")
+                        else:
+                            st.info("📍 AI found no clear clues to where this was taken. "
+                                    + (sug.get("evidence") or "") + " Add the place yourself if you know it.")
+                        ok_col, no_col = st.columns(2)
+                        if sug.get("place") and ok_col.button("Use this place", key="accept_" + p["id"],
+                                                              type="primary", use_container_width=True):
+                            p["place"] = sug["place"]
+                            p["place_source"] = "AI suggestion, confirmed by you"
+                            p.pop("place_suggestion", None)
+                            save(project)
+                            rerun_notice(f"Place set to {sug['place']}.")
+                        if no_col.button("Dismiss", key="dismiss_" + p["id"], use_container_width=True):
+                            p.pop("place_suggestion", None)
+                            save(project)
+                            st.rerun()
                 with right:
                     with st.form("edit_photo_" + p["id"]):
                         caption = st.text_input("What happened", value=p.get("caption", ""))
                         date = st.text_input("When (YYYY-MM-DD, a year, or 'circa 1990')",
                                              value=p.get("event_date", ""))
-                        place = st.text_input("Where", value=p.get("place", ""))
-                        people = st.text_input("Who was there", value=p.get("people", ""))
-                        memory = st.text_area("What do you remember?", value=p.get("memory", ""), height=115)
+                        place = st.text_input("Where (a city or country puts it on the map)", value=p.get("place", ""))
+                        people = st.text_input(btype.get("people_label", "Who was there"), value=p.get("people", ""))
+                        memory = st.text_area(btype["memory_label"], value=p.get("memory", ""), height=115)
                         observation = st.text_area("Photo insights (AI draft, editable)",
                                                    value=p.get("observation", ""), height=90)
                         if st.form_submit_button("Save memory", type="primary"):
+                            if place.strip() != p.get("place", "").strip():
+                                p.pop("place_suggestion", None)
+                                p.pop("place_source", None)
                             p.update({"caption": caption, "event_date": date, "place": place,
                                       "people": people, "memory": memory,
                                       "observation": observation})
@@ -287,19 +429,20 @@ with t_understand:
                             chapter["photo_ids"] = [pid for pid in chapter["photo_ids"] if pid != p["id"]]
                         save(project)
                         location.unlink(missing_ok=True)
-                        rerun_notice("Photo removed from this collection.")
+                        rerun_notice("Photo removed from this photobook.")
 
 # -------------------------- Ask for a story --------------------------
 with t_ask:
     st.markdown('<div class="ls-kicker">Reason</div>', unsafe_allow_html=True)
-    st.subheader("Ask for a story")
+    st.subheader(f"Ask for your {btype['label'].lower()}")
+    st.caption(f"Chapters for a {btype['label'].lower()} are grouped by **{GROUPING_TEXT[btype['grouping']]}**.")
     if not photos_all:
         st.info("Bring in some photos first.")
     saved_filter = project.get("story_filter", {})
     with st.form("story_request_form"):
         request = st.text_input("What story would you like?", value=project.get("story_request", ""),
-                                placeholder="e.g. Tell the story of growing up, for my 18th birthday")
-        st.caption("Try: *Relive our trips to the coast* · *My school years* · *A year in our family*")
+                                placeholder=btype["request_hint"])
+        st.caption("Ideas: " + " · ".join(f"*{x}*" for x in btype["examples"]))
         years = sorted({y for p in photos_all if (y := photo_year(p))})
         year_range = None
         if len(years) >= 2:
@@ -311,8 +454,9 @@ with t_ask:
                                 default=[x for x in saved_filter.get("places", []) if x in places_known])
         include_undated = st.checkbox("Include photos without a date",
                                       value=saved_filter.get("include_undated", True))
-        voice_options = ["Warm and reflective", "Joyful and celebratory", "Simple and factual", "Gentle and poetic"]
-        current_voice = project.get("voice", voice_options[0])
+        voice_options = ["Warm and reflective", "Joyful and celebratory", "Simple and factual", "Gentle and poetic",
+                         "Clear and professional"]
+        current_voice = project.get("voice", btype["voice"])
         voice = st.selectbox("Writing style", voice_options,
                              index=voice_options.index(current_voice) if current_voice in voice_options else 0)
         with st.expander("Book details", expanded=False):
@@ -341,9 +485,9 @@ with t_ask:
     b1, b2 = st.columns(2)
     with b1:
         st.markdown("**Quick draft** (no AI)")
-        st.caption("Arranges your own notes into chapters. Nothing is invented.")
+        st.caption(f"Arranges your own notes into chapters by {GROUPING_TEXT[btype['grouping']]}. Nothing is invented.")
         if st.button("Write a draft", use_container_width=True, type="primary", disabled=not matching):
-            project["chapters"] = generate_local_story(story_project)
+            project["chapters"] = local_chapters(project, matching)
             save(project)
             rerun_notice("Draft ready. See it in 4 · Story views or refine it below.")
     with b2:
@@ -357,7 +501,9 @@ with t_ask:
             try:
                 with st.spinner("Writing your story from your memories..."):
                     project["chapters"] = generate_ai_story(get_client(api_key), model, story_project,
-                                                            share_metadata=share_exif)
+                                                            share_metadata=share_exif,
+                                                            book_label=btype["label"],
+                                                            guidance=btype["guidance"])
                 save(project)
                 rerun_notice("Your story is ready. Check the details before sharing.")
             except Exception as exc:
@@ -398,160 +544,181 @@ with t_ask:
         st.rerun()
 
 # ---------------------------- Story views ----------------------------
+by_id = {p["id"]: p for p in photos_all}
+
+
+def view_timeline(ordered: list[dict]):
+    groups = project.get("chapters") or [{"title": "All memories", "photo_ids": [p["id"] for p in ordered]}]
+    for ch in groups:
+        items = [by_id[i] for i in ch.get("photo_ids", []) if i in by_id]
+        if not items:
+            continue
+        st.markdown(f"##### {ch.get('title', 'Untitled')}")
+        for p in items:
+            c1, c2 = st.columns([1, 3], gap="medium")
+            c1.image(str(photo_path(ROOT, project["id"], p)), use_container_width=True)
+            when = p.get("event_date") or p["metadata"].get("capture_date") or "Date unknown"
+            where = p.get("place") or "Place not recorded"
+            c2.markdown(f"**{when}** · {where}")
+            if p.get("caption"):
+                c2.markdown(p["caption"])
+            if p.get("memory"):
+                c2.caption(p["memory"])
+        st.write("")
+
+
+def view_travels(ordered: list[dict]):
+    stops, unmapped = build_trips(ordered)
+    if not stops:
+        st.info("None of these memories has a location yet. Add a place (e.g. 'Kyoto' or 'Paris, France') "
+                "or use **📍 Suggest places with AI** in **2 · Understand memories**.")
+        return
+    import pydeck as pdk
+    countries = sorted({s["country"] for s in stops if s["country"]})
+    years = sorted({s["start"][:4] for s in stops if s["start"]})
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Destinations", len(stops))
+    k2.metric("Countries", len(countries))
+    k3.metric("Memories on the map", sum(len(s["photo_ids"]) for s in stops))
+    k4.metric("Years", f"{years[0]}–{years[-1]}" if len(years) > 1 else (years[0] if years else "–"))
+
+    chosen = st.session_state.get("travel_stop", 1)
+    if not 1 <= chosen <= len(stops):
+        chosen = 1
+    points = [{"label": s["label"], "when": s["when"] or "Date unknown",
+               "count": len(s["photo_ids"]), "num": str(s["number"]),
+               "lat": s["lat"], "lon": s["lon"],
+               "color": [234, 75, 221] if s["number"] == chosen else [91, 71, 199]} for s in stops]
+    legs = [{"from": [a["lon"], a["lat"]], "to": [b["lon"], b["lat"]]} for a, b in zip(stops, stops[1:])]
+    lat_span = max(s["lat"] for s in stops) - min(s["lat"] for s in stops)
+    lon_span = max(s["lon"] for s in stops) - min(s["lon"] for s in stops)
+    span = max(lat_span, lon_span / 2)
+    zoom = 0.7 if span > 50 else 1.5 if span > 20 else 3 if span > 6 else 5 if span > 1 else 8
+    view = pdk.ViewState(latitude=(max(s["lat"] for s in stops) + min(s["lat"] for s in stops)) / 2,
+                         longitude=(max(s["lon"] for s in stops) + min(s["lon"] for s in stops)) / 2,
+                         zoom=zoom, pitch=0)
+    deck = pdk.Deck(
+        map_style=None, initial_view_state=view,
+        layers=[
+            pdk.Layer("ArcLayer", legs, get_source_position="from", get_target_position="to",
+                      get_source_color=[91, 71, 199, 210], get_target_color=[162, 138, 201, 210],
+                      get_width=3, great_circle=True),
+            pdk.Layer("ScatterplotLayer", points, get_position="[lon, lat]", get_fill_color="color",
+                      get_radius=40000, radius_min_pixels=11, radius_max_pixels=18, stroked=True,
+                      get_line_color=[255, 255, 255], line_width_min_pixels=2, pickable=True),
+            pdk.Layer("TextLayer", points, get_position="[lon, lat]", get_text="num", get_size=13,
+                      get_color=[255, 255, 255], get_text_anchor="'middle'",
+                      get_alignment_baseline="'center'"),
+        ],
+        tooltip={"html": "<b>{label}</b><br/>{when}<br/>{count} memories",
+                 "style": {"backgroundColor": "#1F2D4A", "color": "white"}},
+    )
+    st.pydeck_chart(deck, use_container_width=True)
+    st.caption("Destinations are numbered in the order you visited them. Positions come from each "
+               "photo's camera location or the place you entered, and stay on this computer.")
+
+    st.markdown("##### Your journey")
+    per_row = 4
+    for row in range(0, len(stops), per_row):
+        cols = st.columns(per_row)
+        for col, s in zip(cols, stops[row:row + per_row]):
+            with col.container(border=True):
+                st.markdown(f"**{s['number']} · {s['label']}**")
+                st.caption(f"{s['when'] or 'Date unknown'} · {len(s['photo_ids'])} "
+                           f"memor{'y' if len(s['photo_ids']) == 1 else 'ies'}")
+                if st.button("Viewing" if s["number"] == chosen else "View",
+                             key=f"stop_{s['number']}", use_container_width=True,
+                             type="primary" if s["number"] == chosen else "secondary"):
+                    st.session_state["travel_stop"] = s["number"]
+                    st.rerun()
+
+    stop = stops[chosen - 1]
+    st.markdown(f"#### {stop['label']}")
+    st.caption(f"{stop['when'] or 'Date unknown'} · located from {stop['source']}")
+    for pid in stop["photo_ids"]:
+        p = by_id[pid]
+        c1, c2 = st.columns([1, 2], gap="medium")
+        c1.image(str(photo_path(ROOT, project["id"], p)), use_container_width=True)
+        c2.markdown(f"**{p.get('caption') or p['filename']}**")
+        c2.caption(f"{p.get('event_date') or p['metadata'].get('capture_date') or ''} · "
+                   f"{p.get('place') or ''}")
+        if p.get("memory"):
+            c2.write(p["memory"])
+
+    if unmapped:
+        with st.expander(f"{len(unmapped)} memor{'y' if len(unmapped) == 1 else 'ies'} not on the map"):
+            st.caption("Add a city or country, or use **📍 Suggest places with AI**, in **2 · Understand memories**.")
+            for p in unmapped:
+                st.write(f"• {p.get('caption') or p['filename']} · {p.get('place') or 'no place entered'}")
+
+    st.divider()
+    st.caption("Turn this journey into your story: one chapter per destination, written only "
+               "from your own notes. This replaces the current chapters.")
+    if st.button("Make chapters from these trips"):
+        project["chapters"] = chapters_from_trips(stops, photos_all)
+        save(project)
+        rerun_notice("Created one chapter per destination. Refine them in 3 · Ask for a story.")
+
+
+def view_strip(ordered: list[dict]):
+    st.image([str(photo_path(ROOT, project["id"], p)) for p in ordered], width=220,
+             caption=[f"{p.get('caption') or p['filename']} · "
+                      f"{p.get('event_date') or p['metadata'].get('capture_date') or ''}" for p in ordered])
+
+
+def view_read(ordered: list[dict]):
+    if project.get("dedication"):
+        st.markdown(f"*{project['dedication']}*")
+    if project.get("intro"):
+        st.markdown(f"*{project['intro']}*")
+    if not project.get("chapters"):
+        st.caption("Ask for a story in **3 · Ask for a story** to read it here.")
+    for idx, ch in enumerate(project.get("chapters", []), 1):
+        st.markdown(f'<div class="ls-kicker">Chapter {idx:02d}</div>', unsafe_allow_html=True)
+        st.markdown(f"### {ch.get('title', 'Untitled')}")
+        st.write(ch.get("text", ""))
+        pics = [by_id[i] for i in ch.get("photo_ids", []) if i in by_id]
+        if pics:
+            st.image([str(photo_path(ROOT, project["id"], p)) for p in pics], width=320)
+        st.divider()
+
+
+VIEWS = {"travels": ("🌏 Travels", view_travels), "timeline": ("🕒 Timeline", view_timeline),
+         "read": ("📖 Read", view_read), "strip": ("🎞️ Photo strip", view_strip)}
+
 with t_views:
     st.markdown('<div class="ls-kicker">Experience</div>', unsafe_allow_html=True)
     st.subheader(project.get("title") or "Your story")
     if project.get("story_request"):
         st.caption(f"“{project['story_request']}”")
-    by_id = {p["id"]: p for p in photos_all}
     ordered = [by_id[i] for i in story_photo_ids(project) if i in by_id]
     if not ordered:
         st.info("Bring in photos and ask for a story to see it here.")
     else:
         if not project.get("chapters"):
             st.caption("No story yet, so all memories are shown by date.")
-        v_travel, v_time, v_strip, v_read = st.tabs(["🌏 Travels", "🕒 Timeline", "🎞️ Photo strip", "📖 Read"])
-        with v_time:
-            groups = project.get("chapters") or [{"title": "All memories", "photo_ids": [p["id"] for p in ordered]}]
-            for ch in groups:
-                items = [by_id[i] for i in ch.get("photo_ids", []) if i in by_id]
-                if not items:
-                    continue
-                st.markdown(f"##### {ch.get('title', 'Untitled')}")
-                for p in items:
-                    c1, c2 = st.columns([1, 3], gap="medium")
-                    c1.image(str(photo_path(ROOT, project["id"], p)), use_container_width=True)
-                    when = p.get("event_date") or p["metadata"].get("capture_date") or "Date unknown"
-                    where = p.get("place") or "Place not recorded"
-                    c2.markdown(f"**{when}** · {where}")
-                    if p.get("caption"):
-                        c2.markdown(p["caption"])
-                    if p.get("memory"):
-                        c2.caption(p["memory"])
-                st.write("")
-        with v_travel:
-            stops, unmapped = build_trips(ordered)
-            if not stops:
-                st.info("None of these memories has a location yet. Add a place (e.g. 'Kyoto' or 'Paris, France') "
-                        "in **2 · Understand memories**, or try **🌏 Load travel demo** in the sidebar.")
-            else:
-                import pydeck as pdk
-                countries = sorted({s["country"] for s in stops if s["country"]})
-                years = sorted({s["start"][:4] for s in stops if s["start"]})
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Destinations", len(stops))
-                k2.metric("Countries", len(countries))
-                k3.metric("Memories on the map", sum(len(s["photo_ids"]) for s in stops))
-                k4.metric("Years", f"{years[0]}–{years[-1]}" if len(years) > 1 else (years[0] if years else "–"))
-
-                chosen = st.session_state.get("travel_stop", 1)
-                if not 1 <= chosen <= len(stops):
-                    chosen = 1
-                points = [{"label": s["label"], "when": s["when"] or "Date unknown",
-                           "count": len(s["photo_ids"]), "num": str(s["number"]),
-                           "lat": s["lat"], "lon": s["lon"],
-                           "color": [234, 75, 221] if s["number"] == chosen else [91, 71, 199]} for s in stops]
-                legs = [{"from": [a["lon"], a["lat"]], "to": [b["lon"], b["lat"]]} for a, b in zip(stops, stops[1:])]
-                lat_span = max(s["lat"] for s in stops) - min(s["lat"] for s in stops)
-                lon_span = max(s["lon"] for s in stops) - min(s["lon"] for s in stops)
-                span = max(lat_span, lon_span / 2)
-                zoom = 0.7 if span > 50 else 1.5 if span > 20 else 3 if span > 6 else 5 if span > 1 else 8
-                view = pdk.ViewState(latitude=(max(s["lat"] for s in stops) + min(s["lat"] for s in stops)) / 2,
-                                     longitude=(max(s["lon"] for s in stops) + min(s["lon"] for s in stops)) / 2,
-                                     zoom=zoom, pitch=0)
-                deck = pdk.Deck(
-                    map_style=None, initial_view_state=view,
-                    layers=[
-                        pdk.Layer("ArcLayer", legs, get_source_position="from", get_target_position="to",
-                                  get_source_color=[91, 71, 199, 210], get_target_color=[162, 138, 201, 210],
-                                  get_width=3, great_circle=True),
-                        pdk.Layer("ScatterplotLayer", points, get_position="[lon, lat]", get_fill_color="color",
-                                  get_radius=40000, radius_min_pixels=11, radius_max_pixels=18, stroked=True,
-                                  get_line_color=[255, 255, 255], line_width_min_pixels=2, pickable=True),
-                        pdk.Layer("TextLayer", points, get_position="[lon, lat]", get_text="num", get_size=13,
-                                  get_color=[255, 255, 255], get_text_anchor="'middle'",
-                                  get_alignment_baseline="'center'"),
-                    ],
-                    tooltip={"html": "<b>{label}</b><br/>{when}<br/>{count} memories",
-                             "style": {"backgroundColor": "#1F2D4A", "color": "white"}},
-                )
-                st.pydeck_chart(deck, use_container_width=True)
-                st.caption("Destinations are numbered in the order you visited them. Positions come from each "
-                           "photo's camera location or the place you entered, and stay on this computer.")
-
-                st.markdown("##### Your journey")
-                per_row = 4
-                for row in range(0, len(stops), per_row):
-                    cols = st.columns(per_row)
-                    for col, s in zip(cols, stops[row:row + per_row]):
-                        with col.container(border=True):
-                            st.markdown(f"**{s['number']} · {s['label']}**")
-                            st.caption(f"{s['when'] or 'Date unknown'} · {len(s['photo_ids'])} "
-                                       f"memor{'y' if len(s['photo_ids']) == 1 else 'ies'}")
-                            if st.button("Viewing" if s["number"] == chosen else "View",
-                                         key=f"stop_{s['number']}", use_container_width=True,
-                                         type="primary" if s["number"] == chosen else "secondary"):
-                                st.session_state["travel_stop"] = s["number"]
-                                st.rerun()
-
-                stop = stops[chosen - 1]
-                st.markdown(f"#### {stop['label']}")
-                st.caption(f"{stop['when'] or 'Date unknown'} · located from {stop['source']}")
-                for pid in stop["photo_ids"]:
-                    p = by_id[pid]
-                    c1, c2 = st.columns([1, 2], gap="medium")
-                    c1.image(str(photo_path(ROOT, project["id"], p)), use_container_width=True)
-                    c2.markdown(f"**{p.get('caption') or p['filename']}**")
-                    c2.caption(f"{p.get('event_date') or p['metadata'].get('capture_date') or ''} · "
-                               f"{p.get('place') or ''}")
-                    if p.get("memory"):
-                        c2.write(p["memory"])
-
-                if unmapped:
-                    with st.expander(f"{len(unmapped)} memor{'y' if len(unmapped) == 1 else 'ies'} not on the map"):
-                        st.caption("Add a city or country in **2 · Understand memories** to place these on the map.")
-                        for p in unmapped:
-                            st.write(f"• {p.get('caption') or p['filename']} · {p.get('place') or 'no place entered'}")
-
-                st.divider()
-                st.caption("Turn this journey into your story: one chapter per destination, written only "
-                           "from your own notes. This replaces the current chapters.")
-                if st.button("Make chapters from these trips"):
-                    project["chapters"] = chapters_from_trips(stops, photos_all)
-                    save(project)
-                    rerun_notice("Created one chapter per destination. Refine them in 3 · Ask for a story.")
-        with v_strip:
-            st.image([str(photo_path(ROOT, project["id"], p)) for p in ordered], width=220,
-                     caption=[f"{p.get('caption') or p['filename']} · "
-                              f"{p.get('event_date') or p['metadata'].get('capture_date') or ''}" for p in ordered])
-        with v_read:
-            if project.get("intro"):
-                st.markdown(f"*{project['intro']}*")
-            if not project.get("chapters"):
-                st.caption("Ask for a story in **3 · Ask for a story** to read it here.")
-            for idx, ch in enumerate(project.get("chapters", []), 1):
-                st.markdown(f'<div class="ls-kicker">Chapter {idx:02d}</div>', unsafe_allow_html=True)
-                st.markdown(f"### {ch.get('title', 'Untitled')}")
-                st.write(ch.get("text", ""))
-                pics = [by_id[i] for i in ch.get("photo_ids", []) if i in by_id]
-                if pics:
-                    st.image([str(photo_path(ROOT, project["id"], p)) for p in pics], width=320)
-                st.divider()
+        # The main view for this type comes first. Travel stories lead with the map;
+        # other types keep it last, for any photos that do have places.
+        order = [btype["primary_view"]] + [k for k in ("timeline", "read", "strip", "travels")
+                                           if k != btype["primary_view"]]
+        for tab, key in zip(st.tabs([VIEWS[k][0] for k in order]), order):
+            with tab:
+                VIEWS[key][1](ordered)
 
 # -------------------------------- Book --------------------------------
 with t_book:
     st.markdown('<div class="ls-kicker">Share</div>', unsafe_allow_html=True)
-    st.subheader("Your storybook")
+    st.subheader("Your photobook")
     if not photos_all or not project.get("chapters"):
         st.info("Bring in photos and ask for a story to make a book.")
     else:
         used = {pid for ch in project["chapters"] for pid in ch.get("photo_ids", [])}
-        st.write(f"**{project.get('title', 'Our Life in Pictures')}**: {len(project['chapters'])} chapters, "
-                 f"{len(used)} photos")
+        st.write(f"**{project.get('title') or btype['title']}**: {len(project['chapters'])} chapters, "
+                 f"{len(used)} photos · cover label “{project.get('cover_kicker', btype['kicker'])}”")
         draft_watermark = st.checkbox("Label pages as a personal draft", value=True)
         unassigned = [p for p in photos_all if p["id"] not in used]
         if unassigned:
-            st.caption(f"{len(unassigned)} photo(s) in this collection are not part of this story and won't be in the book.")
+            st.caption(f"{len(unassigned)} photo(s) in this photobook are not part of this story and won't be in the book.")
         if st.button("Prepare PDF book", type="primary"):
             try:
                 with st.spinner("Building your illustrated book..."):
@@ -560,8 +727,8 @@ with t_book:
             except Exception as exc:
                 st.error(f"PDF export failed: {exc}")
         if pdf_bytes := st.session_state.get("rendered_pdf"):
-            st.download_button("⬇ Download storybook PDF", data=pdf_bytes,
-                               file_name="life-story.pdf", mime="application/pdf", type="primary")
+            st.download_button("⬇ Download photobook PDF", data=pdf_bytes,
+                               file_name=f"{project['book_type']}-story.pdf", mime="application/pdf", type="primary")
             st.caption(f"{len(pdf_bytes) / 1024:.0f} KB • A4 portrait")
         st.markdown("#### Chapters")
         for idx, chapter in enumerate(project["chapters"], 1):

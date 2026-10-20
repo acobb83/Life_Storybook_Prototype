@@ -198,3 +198,63 @@ def test_trip_chapters_use_only_user_notes(tmp_path):
     chapters = chapters_from_trips(stops, p["photos"])
     assert chapters[0]["text"] == "Green tea."
     assert chapters[0]["photo_ids"] == [p["photos"][0]["id"]]
+
+
+def test_place_suggestion_uses_stripped_image_and_respects_no_evidence(tmp_path):
+    from storybook.ai import suggest_place
+    image_path = tmp_path / "test.jpg"
+    image_path.write_bytes(jpg_bytes(True))
+    client = MockClient({"city": "Kyoto", "country": "Japan", "evidence": "A sign reads Kyoto.",
+                         "confidence": "medium"})
+    result = suggest_place(client, "gpt-4.1-mini", image_path)
+    assert result == {"place": "Kyoto, Japan", "evidence": "A sign reads Kyoto.", "confidence": "medium"}
+    img_url = client.args[0]["input"][1]["content"][1]["image_url"]
+    with Image.open(io.BytesIO(base64.b64decode(img_url.split(",", 1)[1]))) as image:
+        assert not image.getexif()
+    none = suggest_place(MockClient({"city": "Paris", "country": "", "evidence": "Nothing clear.",
+                                     "confidence": "none"}), "m", image_path)
+    assert none["place"] == "" and none["confidence"] == "none"
+
+
+def test_every_book_type_builds_a_draft(tmp_path):
+    from storybook.demo import make_travel_demo_project
+    from storybook.book_types import BOOK_TYPES, TYPE_ORDER, apply_type, local_chapters
+    assert set(TYPE_ORDER) == set(BOOK_TYPES)
+    p = make_travel_demo_project(tmp_path)
+    for key in TYPE_ORDER:
+        apply_type(p, key)
+        chapters = local_chapters(p, p["photos"])
+        placed = [pid for ch in chapters for pid in ch["photo_ids"]]
+        assert sorted(placed) == sorted(x["id"] for x in p["photos"]), key  # every photo, exactly once
+        assert p["cover_kicker"] == BOOK_TYPES[key]["kicker"]
+    apply_type(p, "year")
+    assert [c["title"] for c in local_chapters(p, p["photos"])][0] == "April 2019"
+    apply_type(p, "family")
+    assert [c["title"] for c in local_chapters(p, p["photos"])] == ["The 2010s", "The 2020s"]
+
+
+def test_changing_type_keeps_a_custom_title(tmp_path):
+    from storybook.book_types import apply_type
+    p = new_project()
+    p["title"] = ""
+    apply_type(p, "business")
+    assert p["title"] == "Project Record" and p["voice"] == "Clear and professional"
+    p["title"] = "Fit-out of Level 3"
+    apply_type(p, "year")
+    assert p["title"] == "Fit-out of Level 3" and p["cover_kicker"] == "A YEAR IN REVIEW"
+
+
+def test_writer_receives_book_type_guidance(tmp_path):
+    p = new_project()
+    add_photo(tmp_path, p, "a.jpg", jpg_bytes())
+    client = MockClient({"chapters": []})
+    generate_ai_story(client, "gpt-4.1-mini", p, book_label="Business record", guidance="Be factual.")
+    sent = json.loads(client.args[0]["input"][1]["content"])
+    assert sent["photobook_type"] == "Business record" and sent["photobook_structure"] == "Be factual."
+
+
+def test_pdf_cover_uses_type_label(tmp_path):
+    p = make_demo_project(tmp_path)
+    p["cover_kicker"] = "IN LOVING MEMORY"
+    text = " ".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(generate_pdf(p, tmp_path))).pages)
+    assert "IN LOVING MEMORY" in text

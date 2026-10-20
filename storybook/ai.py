@@ -17,6 +17,16 @@ OBSERVATION_SCHEMA = {
     },
     "required": ["observation", "question"],
 }
+PLACE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "city": {"type": "string"},
+        "country": {"type": "string"},
+        "evidence": {"type": "string"},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low", "none"]},
+    },
+    "required": ["city", "country", "evidence", "confidence"],
+}
 STORY_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
@@ -66,9 +76,37 @@ def analyse_photo(client, model: str, file_path: Path) -> dict:
         ])
 
 
+def suggest_place(client, model: str, file_path: Path) -> dict:
+    """Suggest a city/country only from clear visible evidence. Never stored until the user accepts."""
+    image_bytes = jpeg_preview_bytes(file_path)  # resized, EXIF and GPS removed
+    image_url = "data:image/jpeg;base64," + base64.b64encode(image_bytes).decode("ascii")
+    result = _json_response(client, model=model, name="place_suggestion", schema=PLACE_SCHEMA,
+        messages=[
+            {"role": "developer", "content": (
+                "Suggest where a personal photograph was taken, using only clear visible evidence: "
+                "a well-known landmark, readable text on signs, menus or tickets, or a landscape or "
+                "building that is strongly tied to one place. Never use people's faces, bodies, "
+                "appearance, ethnicity or clothing as evidence, and never identify anyone. Answer at "
+                "city and country level at most: never a street, address, home or business name. "
+                "If the evidence is weak or absent, return empty city and country with confidence "
+                "'none'. Give the evidence in one short sentence. Return schema-compliant JSON.")},
+            {"role": "user", "content": [
+                {"type": "input_text", "text": "Where might this photo have been taken?"},
+                {"type": "input_image", "image_url": image_url, "detail": "high"},
+            ]},
+        ])
+    city, country = result.get("city", "").strip(), result.get("country", "").strip()
+    if result.get("confidence") == "none" or not (city or country):
+        return {"place": "", "evidence": result.get("evidence", ""), "confidence": "none"}
+    place = ", ".join(x for x in (city, country) if x)
+    return {"place": place, "evidence": result.get("evidence", ""), "confidence": result.get("confidence", "low")}
+
+
 def _photo_fact(p: dict, share_metadata: bool) -> dict:
     m = p.get("metadata", {})
-    fact = {"photo_id": p["id"], "filename": p.get("filename", ""),
+    # Filenames are deliberately not sent: names like "school_years_age_10.png" led the
+    # writer to state ages and events the user never confirmed.
+    fact = {"photo_id": p["id"],
             "visible_observation_AI_unverified": p.get("observation", ""),
             "user_caption": p.get("caption", ""),
             "user_date": p.get("event_date", ""), "user_place": p.get("place", ""),
@@ -79,7 +117,8 @@ def _photo_fact(p: dict, share_metadata: bool) -> dict:
     return fact
 
 
-def generate_ai_story(client, model: str, project: dict, share_metadata: bool = False) -> list[dict]:
+def generate_ai_story(client, model: str, project: dict, share_metadata: bool = False,
+                      book_label: str = "", guidance: str = "") -> list[dict]:
     photos = chronological_photos(project)
     if not photos:
         raise ValueError("Add at least one photo first.")
@@ -89,6 +128,8 @@ def generate_ai_story(client, model: str, project: dict, share_metadata: bool = 
         "voice": project.get("voice", "Warm and reflective"),
         "user_general_instructions": project.get("instructions", ""),
         "user_story_request": project.get("story_request", ""),
+        "photobook_type": book_label,
+        "photobook_structure": guidance,
         "photos": [_photo_fact(p, share_metadata) for p in photos],
     }
     data = _json_response(client, model=model, name="story_chapters", schema=STORY_SCHEMA,
@@ -100,6 +141,7 @@ def generate_ai_story(client, model: str, project: dict, share_metadata: bool = 
                 "events; EXIF timestamps can be wrong. Never invent names, dialogue, relationships, "
                 "locations, life events, motivations, or specific dates. If details are missing, "
                 "write modestly about the image and what it evokes, without asserting guesses. "
+                "Follow the photobook type and structure given. "
                 "If the user gives a story request, shape the chapters around it using only the supplied "
                 "photos and notes. Use photo IDs exactly as supplied. Create 1-8 coherent chronological chapters, "
                 "roughly 60-130 words each, readable and polished. Place each photo in exactly one "

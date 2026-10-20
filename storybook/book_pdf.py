@@ -119,7 +119,7 @@ def generate_pdf(project: dict, root: Path, mark_draft: bool = True) -> bytes:
             canvas.drawString(55, 29, "PERSONAL DRAFT - PLEASE REVIEW")
         canvas.restoreState()
 
-    flow = [Spacer(1, 50), Paragraph("LIFE STORY", styles["cover_kicker"]),
+    flow = [Spacer(1, 50), Paragraph(_markup(project.get("cover_kicker") or "LIFE STORY"), styles["cover_kicker"]),
             Paragraph(_markup(project.get("title") or "Our Life in Pictures"), styles["cover_title"]),
             Paragraph(_markup(project.get("subtitle") or "A collection of moments worth remembering"),
                       styles["cover_subtitle"]), Spacer(1, 8)]

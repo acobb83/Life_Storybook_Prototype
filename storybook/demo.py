@@ -89,6 +89,7 @@ def make_demo_project(root):
     project["subtitle"] = "A fictional family story - sample project"
     project["intro"] = "This book uses synthetic illustrations and invented sample memories to demonstrate the workflow. Replace every sample with your own photographs and experiences."
     project["dedication"] = "For the people who make ordinary days extraordinary."
+    project["book_type"], project["cover_kicker"] = "life", "A LIFE STORY"
     save_project(root, project)
     for idx, (title, date, place, people, memory, palette) in enumerate(SCENES):
         add_photo(root, project, f"demo_illustration_{idx + 1}.jpg", illustrated_card(title, palette, idx, date, DEMO_GPS.get(idx)))
@@ -179,6 +180,8 @@ def make_travel_demo_project(root):
     project["intro"] = ("This collection uses synthetic postcard illustrations and invented memories to "
                         "demonstrate the Travels view. Replace them with your own photos.")
     project["story_request"] = "Relive our travels"
+    project["book_type"], project["cover_kicker"] = "travel", "A TRAVEL STORY"
+    project["voice"] = "Joyful and celebratory"
     save_project(root, project)
     for idx, (caption, date, place, gps, memory, style, palette) in enumerate(TRAVELS):
         img = travel_postcard(caption, style, palette, idx)
