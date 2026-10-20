@@ -20,9 +20,9 @@
 
 Types are defined in `storybook/book_types.py`; adding one is a single dictionary entry.
 
-The app follows the two journeys in the architecture deck (`Hackathon_Docs/Life_Story.pptx`):
+The app walks you through five numbered steps (a step bar at the top, a short note on what to do, and **← Back / Next →** buttons that tell you when you're ready to move on). They follow the two journeys in the architecture deck (`Hackathon_Docs/Life_Story.pptx`):
 
-| Tab | Deck layer | What works in the prototype |
+| Step | Deck layer | What works in the prototype |
 |---|---|---|
 | 1 · Link & bring in | Sources / Connect | Uploads. OneDrive, Google Photos, Instagram and Mail & calendar are shown as *planned* |
 | 2 · Understand memories | Enrich | When & where from EXIF, AI photo insights (optional), your own words |
@@ -54,7 +54,7 @@ To use your own photos, choose **＋ New photobook** → pick a type → **Link 
 ## Optional live AI
 
 1. Get an API key from your OpenAI account, subject to your organisation's data policies and billing.
-2. Enter it under **AI settings** in the app sidebar, or set `OPENAI_API_KEY` in the launch environment.
+2. Click any AI button and the app will ask for it (kept for the session only), or enter it under **AI settings** in the sidebar, or set `OPENAI_API_KEY` in the launch environment.
 3. Use **✨ Describe** or **✨ Describe all photos with AI** to add *visible-only* observations. Note: no identification/face recognition is performed.
 4. Correct the captions, date, people, places and memories yourself.
 5. In **Ask for a story**, tick consent and choose **Write with AI**. Your story request is passed to the writer. Optionally permit camera timestamps to be included (GPS is *never* sent).

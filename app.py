@@ -72,6 +72,29 @@ def get_client(key: str):
     return OpenAI(api_key=key, timeout=70.0, max_retries=1)
 
 
+@st.dialog("Connect AI")
+def ai_key_dialog(action: str):
+    st.write(f"**{action}** uses AI. Paste an OpenAI API key to continue.")
+    st.caption("The key is kept only for this browser session and never saved to your photobook. "
+               "Each AI request may incur API charges. Only resized photos (location data removed) "
+               "or the notes you choose are sent.")
+    key = st.text_input("OpenAI API key", type="password", placeholder="sk-...")
+    c1, c2 = st.columns(2)
+    if c1.button("Connect", type="primary", use_container_width=True, disabled=not key.strip()):
+        st.session_state["api_key"] = key.strip()
+        rerun_notice(f"AI connected. Click “{action}” again to continue.")
+    if c2.button("Not now", use_container_width=True):
+        st.rerun()
+
+
+def require_ai(action: str) -> bool:
+    """True when a key is available; otherwise asks for one and returns False."""
+    if api_key:
+        return True
+    ai_key_dialog(action)
+    return False
+
+
 def story_photo_ids(project: dict) -> list[str]:
     """Photos in story order: by chapter if a story exists, otherwise by date."""
     ids = [pid for ch in project.get("chapters", []) for pid in ch.get("photo_ids", [])]
@@ -121,15 +144,18 @@ with st.sidebar:
         st.session_state["active_project"] = sample["id"]
         st.session_state["travel_stop"] = 1
         st.session_state.pop("choosing_type", None)
-        rerun_notice("Loaded a fictional travel story. Open 4 · Story views to see the map.")
+        rerun_notice("Loaded a fictional travel story. The map is in step 4 · Story views.")
     st.divider()
     with st.expander("AI settings (optional)", expanded=False):
-        api_key = st.text_input("OpenAI API key", type="password", key="openai_key",
-                                placeholder="sk-... (or set OPENAI_API_KEY)",
-                                help="Held in this session only; never written to project files.") or os.getenv("OPENAI_API_KEY", "")
+        typed_key = st.text_input("OpenAI API key", type="password", value=st.session_state.get("api_key", ""),
+                                  placeholder="sk-... (or set OPENAI_API_KEY)",
+                                  help="Held in this session only; never written to project files.")
+        if typed_key != st.session_state.get("api_key", ""):
+            st.session_state["api_key"] = typed_key
+        api_key = typed_key or os.getenv("OPENAI_API_KEY", "")
         model = st.text_input("Model", value=DEFAULT_MODEL, help="An image-capable OpenAI Responses API model.")
         st.caption("AI runs only when you click an AI button. API usage may incur charges.")
-    st.caption("🟢 AI connected" if api_key else "⚪ AI off: local mode")
+    st.caption("🟢 AI connected" if api_key else "⚪ AI not connected: you'll be asked for a key when an AI step needs one")
 
 project = load_project(ROOT, st.session_state["active_project"])
 
@@ -214,12 +240,43 @@ m2.metric("In your own words", sum(bool(p.get("memory", "").strip()) for p in ph
 m3.metric("Places", len({p["place"].strip() for p in photos_all if p.get("place", "").strip()}))
 m4.metric("Story chapters", len(project.get("chapters", [])))
 
-t_link, t_understand, t_ask, t_views, t_book = st.tabs([
-    "1 · Link & bring in", "2 · Understand memories", "3 · Ask for a story", "4 · Story views", "5 · Book"
-])
+# ------------------------------ Step-by-step ------------------------------
+STEPS = ["Link & bring in", "Understand memories", "Ask for a story", "Story views", "Book"]
+with_notes = sum(bool(p.get("memory", "").strip() or p.get("caption", "").strip()) for p in photos_all)
+has_story = bool(project.get("chapters"))
+STEP_DONE = [bool(photos_all), bool(photos_all) and with_notes == len(photos_all), has_story, has_story,
+             bool(st.session_state.get("rendered_pdf"))]
+STEP_HELP = [
+    "Add the photos for this photobook. When they're in, go to the next step.",
+    "Check when and where each photo was taken and add what you remember. Notes are optional, but "
+    "they're what the story is built from.",
+    f"Say what story you'd like, then write a draft (no AI) or write it with AI. Chapters for a "
+    f"{btype['label'].lower()} are grouped by {GROUPING_TEXT[btype['grouping']]}.",
+    "See your story as a timeline, map, photo strip or chapters to read. Go back to step 3 to edit it.",
+    "Make the printable PDF photobook and download it.",
+]
+if st.session_state.get("step_for") != project["id"]:
+    # Opening a photobook: start where there is something to do.
+    st.session_state["step_for"] = project["id"]
+    st.session_state["step"] = 4 if has_story else 2 if photos_all else 1
+step = st.session_state.get("step", 1)
+
+
+def go(n: int):
+    st.session_state["step"] = n
+    st.rerun()
+
+
+st.progress(sum(STEP_DONE) / len(STEPS))
+for i, (col, name) in enumerate(zip(st.columns(len(STEPS)), STEPS), 1):
+    mark = "✓ " if STEP_DONE[i - 1] and i != step else ""
+    if col.button(f"{mark}{i} · {name}", key=f"stepnav_{i}", use_container_width=True,
+                  type="primary" if i == step else "secondary"):
+        go(i)
+st.info(f"**Step {step} of {len(STEPS)} · {STEPS[step - 1]}**: {STEP_HELP[step - 1]}")
 
 # -------------------------- Link & bring in --------------------------
-with t_link:
+if step == 1:
     st.markdown('<div class="ls-kicker">Sources</div>', unsafe_allow_html=True)
     st.subheader("Bring your memories in")
     sources = [("⬆️", "Uploads", "Photos from this computer", True),
@@ -258,7 +315,8 @@ with t_link:
                 errors.append(f"{file.name}: {exc}")
         if added:
             st.session_state.pop("rendered_pdf", None)
-        st.success(f"Brought in {added} photos; skipped {skipped} duplicates.")
+        st.success(f"Brought in {added} photos; skipped {skipped} duplicates. "
+                   "Bring in more, or click **Next** below when you're ready.")
         for error in errors:
             st.error(error)
     if photos_all:
@@ -270,7 +328,7 @@ with t_link:
                 st.caption(photo.get("caption") or photo["filename"])
 
 # ------------------------ Understand memories ------------------------
-with t_understand:
+if step == 2:
     st.markdown('<div class="ls-kicker">Enrich</div>', unsafe_allow_html=True)
     st.subheader("Each memory is understood")
     e1, e2, e3 = st.columns(3)
@@ -282,12 +340,13 @@ with t_understand:
                 'These are what the story is built from.</div></div>', unsafe_allow_html=True)
     st.write("")
     if not photos_all:
-        st.info("Bring in your first photos in **1 · Link & bring in**, or load a demo from the sidebar.")
+        st.info("No photos yet. Go back to step **1 · Link & bring in**, or load a demo from the sidebar.")
     else:
         unlocated = [p for p in photos_all if needs_location(p)]
         a1, a2 = st.columns(2)
-        if a1.button("✨ Describe all photos with AI", disabled=not bool(api_key), use_container_width=True,
-                     help="Sends one reduced-size, EXIF-stripped photo at a time; GPS is never sent."):
+        if a1.button("✨ Describe all photos with AI", use_container_width=True,
+                     help="Sends one reduced-size, EXIF-stripped photo at a time; GPS is never sent.") \
+                and require_ai("Describe all photos with AI"):
             progress = st.progress(0)
             errors = []
             client = get_client(api_key)
@@ -306,9 +365,10 @@ with t_understand:
             else:
                 rerun_notice("AI descriptions are ready. Please check each one.")
         if a2.button(f"📍 Suggest places with AI ({len(unlocated)} without a location)",
-                     disabled=not (api_key and unlocated), use_container_width=True,
+                     disabled=not unlocated, use_container_width=True,
                      help="For photos with no camera location and no recognised place. "
-                          "Suggestions are only saved when you accept them."):
+                          "Suggestions are only saved when you accept them.") \
+                and require_ai("Suggest places with AI"):
             progress = st.progress(0)
             errors, found = [], 0
             client = get_client(api_key)
@@ -325,8 +385,8 @@ with t_understand:
             else:
                 rerun_notice(f"AI suggested a place for {found} of {len(unlocated)} photos. "
                              "Open each photo below to accept or dismiss.")
-        if not api_key:
-            st.caption("Add an API key under **AI settings** in the sidebar to use AI descriptions and place suggestions.")
+        st.caption("AI steps are optional: you can type everything yourself."
+                   + ("" if api_key else " You'll be asked for an API key the first time you use one."))
         for p in chronological_photos(project):
             friendly = p.get("caption", "").strip() or p["filename"]
             done = "✅" if p.get("memory", "").strip() else "📷"
@@ -352,8 +412,8 @@ with t_understand:
                     if p.get("question"):
                         st.info("💬 " + p["question"])
                     b_desc, b_place = st.columns(2)
-                    if b_desc.button("✨ Describe", key="analyse_" + p["id"], disabled=not bool(api_key),
-                                     use_container_width=True):
+                    if b_desc.button("✨ Describe", key="analyse_" + p["id"], use_container_width=True) \
+                            and require_ai("Describe"):
                         described = False
                         try:
                             with st.spinner("Looking at visible details..."):
@@ -369,7 +429,7 @@ with t_understand:
                         if described:
                             rerun_notice("Description ready. Please check it and add your memory.")
                     if not gps and b_place.button("📍 Suggest place", key="place_" + p["id"],
-                                                  disabled=not bool(api_key), use_container_width=True):
+                                                  use_container_width=True) and require_ai("Suggest place"):
                         suggested = False
                         try:
                             with st.spinner("Looking for landmarks, signs and other clues..."):
@@ -401,6 +461,17 @@ with t_understand:
                             p.pop("place_suggestion", None)
                             save(project)
                             st.rerun()
+                    with st.popover("🗑️ Remove photo"):
+                        st.write("Remove this photo from the photobook? Its memory notes go too, and it is "
+                                 "taken out of any chapters. This can't be undone.")
+                        if st.button("Yes, remove it", key="remove_" + p["id"], type="primary"):
+                            location = photo_path(ROOT, project["id"], p)
+                            project["photos"] = [item for item in project["photos"] if item["id"] != p["id"]]
+                            for chapter in project["chapters"]:
+                                chapter["photo_ids"] = [pid for pid in chapter["photo_ids"] if pid != p["id"]]
+                            save(project)
+                            location.unlink(missing_ok=True)
+                            rerun_notice("Photo removed from this photobook.")
                 with right:
                     with st.form("edit_photo_" + p["id"]):
                         caption = st.text_input("What happened", value=p.get("caption", ""))
@@ -420,19 +491,9 @@ with t_understand:
                                       "observation": observation})
                             save(project)
                             rerun_notice("Memory saved. Ask for a new story to include the changes.")
-                    confirm_remove = st.checkbox("Confirm removal", key="confirm_remove_" + p["id"])
-                    if st.button("Remove this photo", key="remove_" + p["id"],
-                                 disabled=not confirm_remove):
-                        location = photo_path(ROOT, project["id"], p)
-                        project["photos"] = [item for item in project["photos"] if item["id"] != p["id"]]
-                        for chapter in project["chapters"]:
-                            chapter["photo_ids"] = [pid for pid in chapter["photo_ids"] if pid != p["id"]]
-                        save(project)
-                        location.unlink(missing_ok=True)
-                        rerun_notice("Photo removed from this photobook.")
 
 # -------------------------- Ask for a story --------------------------
-with t_ask:
+if step == 3:
     st.markdown('<div class="ls-kicker">Reason</div>', unsafe_allow_html=True)
     st.subheader(f"Ask for your {btype['label'].lower()}")
     st.caption(f"Chapters for a {btype['label'].lower()} are grouped by **{GROUPING_TEXT[btype['grouping']]}**.")
@@ -489,15 +550,17 @@ with t_ask:
         if st.button("Write a draft", use_container_width=True, type="primary", disabled=not matching):
             project["chapters"] = local_chapters(project, matching)
             save(project)
-            rerun_notice("Draft ready. See it in 4 · Story views or refine it below.")
+            st.session_state["step"] = 4
+            rerun_notice("Draft ready. Here it is. Go back to step 3 to refine it.")
     with b2:
         st.markdown("**Story writer** (AI)")
         consent = st.checkbox("Send the notes for these memories to OpenAI to write the story.",
                               key="story_consent")
         share_exif = st.checkbox("Include camera dates (never GPS)", value=False)
         if st.button("✨ Write with AI", use_container_width=True,
-                     disabled=not (matching and api_key and consent),
-                     help="Replaces the current chapters. Copy any text you want to keep first."):
+                     disabled=not (matching and consent),
+                     help="Tick the box above first. Replaces the current chapters.") \
+                and require_ai("Write with AI"):
             try:
                 with st.spinner("Writing your story from your memories..."):
                     project["chapters"] = generate_ai_story(get_client(api_key), model, story_project,
@@ -505,6 +568,7 @@ with t_ask:
                                                             book_label=btype["label"],
                                                             guidance=btype["guidance"])
                 save(project)
+                st.session_state["step"] = 4
                 rerun_notice("Your story is ready. Check the details before sharing.")
             except Exception as exc:
                 st.error(f"Story writing failed: {exc}")
@@ -657,7 +721,7 @@ def view_travels(ordered: list[dict]):
     if st.button("Make chapters from these trips"):
         project["chapters"] = chapters_from_trips(stops, photos_all)
         save(project)
-        rerun_notice("Created one chapter per destination. Refine them in 3 · Ask for a story.")
+        rerun_notice("Created one chapter per destination. Refine them in step 3 · Ask for a story.")
 
 
 def view_strip(ordered: list[dict]):
@@ -672,7 +736,7 @@ def view_read(ordered: list[dict]):
     if project.get("intro"):
         st.markdown(f"*{project['intro']}*")
     if not project.get("chapters"):
-        st.caption("Ask for a story in **3 · Ask for a story** to read it here.")
+        st.caption("Ask for a story in step **3 · Ask for a story** to read it here.")
     for idx, ch in enumerate(project.get("chapters", []), 1):
         st.markdown(f'<div class="ls-kicker">Chapter {idx:02d}</div>', unsafe_allow_html=True)
         st.markdown(f"### {ch.get('title', 'Untitled')}")
@@ -686,7 +750,7 @@ def view_read(ordered: list[dict]):
 VIEWS = {"travels": ("🌏 Travels", view_travels), "timeline": ("🕒 Timeline", view_timeline),
          "read": ("📖 Read", view_read), "strip": ("🎞️ Photo strip", view_strip)}
 
-with t_views:
+if step == 4:
     st.markdown('<div class="ls-kicker">Experience</div>', unsafe_allow_html=True)
     st.subheader(project.get("title") or "Your story")
     if project.get("story_request"):
@@ -706,7 +770,7 @@ with t_views:
                 VIEWS[key][1](ordered)
 
 # -------------------------------- Book --------------------------------
-with t_book:
+if step == 5:
     st.markdown('<div class="ls-kicker">Share</div>', unsafe_allow_html=True)
     st.subheader("Your photobook")
     if not photos_all or not project.get("chapters"):
@@ -735,6 +799,24 @@ with t_book:
             st.write(f"**{idx:02d} · {chapter.get('title', 'Untitled')}** · {len(chapter.get('photo_ids', []))} photos")
             text = chapter.get("text", "")
             st.caption((text[:190] + "...") if len(text) > 190 else text)
+
+# --------------------------- Back / Next ---------------------------
+st.write("")
+st.divider()
+NEXT_BLOCK = {1: (not photos_all, "Add at least one photo to continue."),
+              3: (not has_story, "Write a draft or write with AI to continue.")}
+NEXT_HINT = {2: (f"{len(photos_all) - with_notes} photo(s) have no notes yet. You can still continue."
+                 if photos_all and with_notes < len(photos_all) else "")}
+back_col, hint_col, next_col = st.columns([1, 2, 1.3])
+if step > 1 and back_col.button(f"← {STEPS[step - 2]}", use_container_width=True):
+    go(step - 1)
+blocked, why = NEXT_BLOCK.get(step, (False, ""))
+hint_col.caption(why if blocked else NEXT_HINT.get(step, ""))
+if step < len(STEPS):
+    if next_col.button(f"Next: {STEPS[step]} →", type="primary", use_container_width=True, disabled=blocked):
+        go(step + 1)
+else:
+    next_col.caption("🎉 That's the whole journey. Use the steps above to go back and change anything.")
 
 st.divider()
 st.caption("Privacy: photos and story text are stored on this computer under the data/ folder. Only the AI buttons "
