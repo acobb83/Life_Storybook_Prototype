@@ -18,7 +18,8 @@ from storybook.core import (InvalidPhoto, add_photo, chronological_photos, delet
                             photo_year, register_heif, remove_display_cache, reread_metadata,
                             save_project, select_photos)
 from storybook.demo import make_demo_project, make_travel_demo_project
-from storybook.travel import build_trips, chapters_from_trips, lookup_place
+from storybook.travel import (autofill_from_camera, build_trips, camera_place_name, chapters_from_trips,
+                               lookup_place)
 
 st.set_page_config(page_title="Life Story", page_icon="📖", layout="wide")
 ROOT = Path(os.environ.get("LIFESTORY_DATA_DIR", Path(__file__).parent / "data")).expanduser().resolve()
@@ -82,13 +83,22 @@ def ai_key_dialog(action: str):
     st.caption("The key is kept only for this browser session and never saved to your photobook. "
                "Each AI request may incur API charges. Only resized photos (location data removed) "
                "or the notes you choose are sent.")
-    key = st.text_input("OpenAI API key", type="password", placeholder="sk-...")
-    c1, c2 = st.columns(2)
-    if c1.button("Connect", type="primary", use_container_width=True, disabled=not key.strip()):
-        st.session_state["api_key"] = key.strip()
-        rerun_notice(f"AI connected. Click “{action}” again to continue.")
-    if c2.button("Not now", use_container_width=True):
+    # A form sends whatever is typed the moment a button (or Enter) is pressed, so Connect is
+    # always ready; Streamlit can't light a button up live while someone is still typing.
+    with st.form("ai_key_form", border=False):
+        key = st.text_input("OpenAI API key", type="password", placeholder="sk-...")
+        left, right = st.columns(2)
+        # Connect is declared first so pressing Enter in the key box means "Connect".
+        connect = right.form_submit_button("Connect", type="primary", use_container_width=True)
+        not_now = left.form_submit_button("Not now", use_container_width=True)
+    if not_now:
         st.rerun()
+    if connect:
+        if key.strip():
+            st.session_state["api_key"] = key.strip()
+            rerun_notice(f"AI connected. Click “{action}” again to continue.")
+        else:
+            st.error("Paste your OpenAI API key first.")
 
 
 def require_ai(action: str) -> bool:
@@ -178,6 +188,9 @@ with st.sidebar:
     st.caption("🟢 AI connected" if api_key else "⚪ AI not connected: you'll be asked for a key when an AI step needs one")
 
 project = load_project(ROOT, st.session_state["active_project"])
+# Fill empty When/Where boxes from camera data (new uploads and photos added before this existed).
+if any([autofill_from_camera(p) for p in project["photos"]]):
+    save_project(ROOT, project)
 
 with st.sidebar:
     if project.get("book_type"):
@@ -335,6 +348,8 @@ if step == 1:
             except (InvalidPhoto, OSError, ValueError) as exc:
                 errors.append(f"{file.name}: {exc}")
         new_photos = [p for p in project["photos"] if p["id"] not in before]
+        if any([autofill_from_camera(p) for p in new_photos]):
+            save_project(ROOT, project)
         located = sum(bool(p["metadata"].get("gps")) for p in new_photos)
         dated = sum(bool(p["metadata"].get("capture_date")) for p in new_photos)
         if added:
@@ -419,6 +434,9 @@ if step == 2:
         if st.button("🔄 Re-check camera data", help="Re-reads dates and locations from the photo files you "
                      "already uploaded. Your own notes are not changed."):
             found = reread_metadata(ROOT, project)
+            for p in project["photos"]:
+                autofill_from_camera(p)
+            save_project(ROOT, project)
             rerun_notice(f"Re-checked {len(photos_all)} photos: {found} have a camera location.")
         st.caption("AI steps are optional: you can type everything yourself."
                    + ("" if api_key else " You'll be asked for an API key the first time you use one."))
@@ -434,7 +452,8 @@ if step == 2:
                     gps = m.get("gps")
                     known = lookup_place(p.get("place", ""))
                     if gps:
-                        on_map = f"Camera location {gps['latitude']}, {gps['longitude']} (stays on this computer)"
+                        on_map = (camera_place_name(p) or f"{gps['latitude']:.4f}, {gps['longitude']:.4f}") + \
+                            " (camera location, stays on this computer)"
                     elif known:
                         on_map = f"{known['name']}" + (f", {known['country']}" if known["country"] != known["name"] else "") + \
                                  " (from the place entered)"
@@ -512,6 +531,11 @@ if step == 2:
                             remove_display_cache(ROOT, project["id"], p["id"])
                             rerun_notice("Photo removed from this photobook.")
                 with right:
+                    from_camera = [label for field, label in (("event_date_source", "When"), ("place_source", "Where"))
+                                   if p.get(field) in ("camera", "camera location")]
+                    if from_camera:
+                        st.caption(f"📷 {' and '.join(from_camera)} filled in from the camera data. "
+                                   "Check they're right; edit and save if not.")
                     with st.form("edit_photo_" + p["id"]):
                         caption = st.text_input("What happened", value=p.get("caption", ""))
                         date = st.text_input("When (YYYY-MM-DD, a year, or 'circa 1990')",
@@ -525,6 +549,8 @@ if step == 2:
                             if place.strip() != p.get("place", "").strip():
                                 p.pop("place_suggestion", None)
                                 p.pop("place_source", None)
+                            if date.strip() != p.get("event_date", "").strip():
+                                p.pop("event_date_source", None)
                             p.update({"caption": caption, "event_date": date, "place": place,
                                       "people": people, "memory": memory,
                                       "observation": observation})

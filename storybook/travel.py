@@ -164,6 +164,45 @@ def locate(photo: dict) -> dict | None:
     return None
 
 
+def camera_place_name(photo: dict) -> str:
+    """'Doha, Qatar' for a photo whose camera location is near a known town or city, else ''."""
+    gps = photo.get("metadata", {}).get("gps")
+    if not gps:
+        return ""
+    city = nearest_city(gps["latitude"], gps["longitude"])
+    if not city:
+        return ""
+    country = CITIES[city][2]
+    return city if country == city else f"{city}, {country}"
+
+
+def autofill_from_camera(photo: dict) -> bool:
+    """Fill empty When/Where boxes from the photo's camera data, once per box.
+    Never overwrites what the user typed; if they later clear a box it stays clear.
+    Returns True if anything changed."""
+    tried = set(photo.get("autofill_tried", []))
+    changed = False
+    meta = photo.get("metadata", {})
+    if "event_date" not in tried and meta.get("capture_date"):
+        tried.add("event_date")
+        if not photo.get("event_date", "").strip():
+            photo["event_date"] = meta["capture_date"]
+            photo["event_date_source"] = "camera"
+            changed = True
+    if "place" not in tried and meta.get("gps"):
+        name = camera_place_name(photo)
+        if name:
+            tried.add("place")
+            if not photo.get("place", "").strip():
+                photo["place"] = name
+                photo["place_source"] = "camera location"
+                changed = True
+    if tried != set(photo.get("autofill_tried", [])):
+        photo["autofill_tried"] = sorted(tried)
+        changed = True
+    return changed
+
+
 def photo_date(photo: dict) -> str:
     return photo.get("event_date") or photo.get("metadata", {}).get("capture_date") or ""
 

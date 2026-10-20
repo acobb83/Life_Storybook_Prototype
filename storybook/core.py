@@ -155,6 +155,7 @@ def reread_metadata(root: Path, project: dict) -> int:
             with Image.open(io.BytesIO(raw)) as img:
                 img.load()  # some formats (e.g. PNG) only expose EXIF once fully loaded
                 photo["metadata"] = extract_metadata(img, raw)
+            photo.pop("autofill_tried", None)  # an explicit re-check may fill empty boxes again
         except (OSError, ValueError, UnidentifiedImageError):
             continue
     save_project(root, project)

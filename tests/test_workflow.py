@@ -384,3 +384,25 @@ def test_web_book_is_self_contained_and_safe(tmp_path):
     exact = build_book_data(p, tmp_path, precise_map=True)["stops"][0]
     assert (exact["lat"], exact["lon"]) == (35.6895, 139.6917) # the photo's own location
     assert build_book_data(p, tmp_path, include_map=False)["stops"] == []
+
+
+def test_when_and_where_filled_from_camera_once(tmp_path):
+    from PIL.TiffImagePlugin import IFDRational as Rat
+    from storybook.travel import autofill_from_camera
+    from storybook.core import reread_metadata
+    p = new_project()
+    doha = {1: "N", 2: (Rat(25, 1), Rat(17, 1), Rat(5007, 100)), 3: "E", 4: (Rat(51, 1), Rat(32, 1), Rat(1262, 100))}
+    add_photo(tmp_path, p, "20260919_112106.jpg", _gps_jpeg(doha, "2026:09:19 11:21:06"))
+    add_photo(tmp_path, p, "typed.jpg", _gps_jpeg(doha, "2026:09:20 09:00:00"))
+    photo, typed = p["photos"]
+    typed.update({"place": "The Corniche", "event_date": "September 2026"})
+    assert autofill_from_camera(photo) and autofill_from_camera(typed)
+    assert (photo["event_date"], photo["place"]) == ("2026-09-19", "Doha, Qatar")
+    assert photo["place_source"] == "camera location" and photo["event_date_source"] == "camera"
+    assert (typed["event_date"], typed["place"]) == ("September 2026", "The Corniche")   # never overwritten
+    photo["place"] = ""                                       # the user clears it on purpose...
+    autofill_from_camera(photo)
+    assert photo["place"] == ""                               # ...and it stays clear
+    reread_metadata(tmp_path, p)                              # an explicit re-check may fill it again
+    autofill_from_camera(photo)
+    assert photo["place"] == "Doha, Qatar"
