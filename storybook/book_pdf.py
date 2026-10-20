@@ -18,10 +18,10 @@ from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, PageBreak,
 
 from .core import chronological_photos, jpeg_preview_bytes, photo_path
 
-INK = colors.HexColor("#173140")
-MUTED = colors.HexColor("#5A7180")
-TEAL = colors.HexColor("#2C7774")
-CREAM = colors.HexColor("#F5F0E7")
+INK = colors.HexColor("#1F2D4A")
+MUTED = colors.HexColor("#53617B")
+TEAL = colors.HexColor("#5B47C7")  # Life Story accent (violet)
+CREAM = colors.HexColor("#F5EFE8")
 W, H = A4
 
 
@@ -89,7 +89,7 @@ def generate_pdf(project: dict, root: Path, mark_draft: bool = True) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=59, bottomMargin=58,
                             leftMargin=55, rightMargin=55,
-                            title=project.get("title", "Life Story"), author="Life Storybook Prototype")
+                            title=project.get("title", "Life Story"), author="Life Story prototype")
 
     def paint_cover(canvas, _doc):
         canvas.saveState()
@@ -119,7 +119,7 @@ def generate_pdf(project: dict, root: Path, mark_draft: bool = True) -> bytes:
             canvas.drawString(55, 29, "PERSONAL DRAFT - PLEASE REVIEW")
         canvas.restoreState()
 
-    flow = [Spacer(1, 50), Paragraph("LIFE STORYBOOK", styles["cover_kicker"]),
+    flow = [Spacer(1, 50), Paragraph("LIFE STORY", styles["cover_kicker"]),
             Paragraph(_markup(project.get("title") or "Our Life in Pictures"), styles["cover_title"]),
             Paragraph(_markup(project.get("subtitle") or "A collection of moments worth remembering"),
                       styles["cover_subtitle"]), Spacer(1, 8)]

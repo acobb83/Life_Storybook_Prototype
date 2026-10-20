@@ -1,8 +1,9 @@
 [theme]
-primaryColor="#2C7774"
-backgroundColor="#FFFFFF"
-secondaryBackgroundColor="#F5F0E7"
-textColor="#173140"
+# Light "Life Story" palette, matched to the architecture deck and travel timeline demo.
+primaryColor="#5B47C7"
+backgroundColor="#FBF8F4"
+secondaryBackgroundColor="#F1ECF7"
+textColor="#1F2D4A"
 font="sans serif"
 
 [server]

@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 from pypdf import PdfReader
 
-from storybook.core import (InvalidPhoto, add_photo, chronological_photos,
+from storybook.core import (InvalidPhoto, add_photo, chronological_photos, select_photos,
                             extract_metadata, jpeg_preview_bytes, list_projects,
                             load_project, new_project, photo_path, save_project)
 from storybook.ai import analyse_photo, generate_ai_story, generate_local_story, normalize_chapters
@@ -135,3 +135,66 @@ def test_full_demo_to_pdf(tmp_path):
     assert "CHAPTER" in extracted
     assert "Our story is still being written" in extracted
     assert any(page.get("/Resources", {}).get("/XObject") for page in reader.pages)
+
+
+def test_ask_for_a_story_filters_by_year_and_place(tmp_path):
+    p = make_demo_project(tmp_path)
+    assert [x["caption"] for x in select_photos(p, (1997, 2003))] == ["Beach afternoons", "Our little backyard"]
+    assert [x["caption"] for x in select_photos(p, places=["Blue Mountains"])] == ["Time together"]
+    assert len(select_photos(p)) == 4
+
+
+def test_story_request_is_sent_to_writer(tmp_path):
+    p = new_project()
+    add_photo(tmp_path, p, "a.jpg", jpg_bytes())
+    p["story_request"] = "Tell the story of our holidays"
+    client = MockClient({"chapters": []})
+    generate_ai_story(client, "gpt-4.1-mini", p)
+    sent = json.loads(client.args[0]["input"][1]["content"])
+    assert sent["user_story_request"] == "Tell the story of our holidays"
+
+
+def test_demo_has_map_points_for_some_scenes(tmp_path):
+    p = make_demo_project(tmp_path)
+    located = [x["caption"] for x in p["photos"] if x["metadata"]["gps"]]
+    assert located == ["Beach afternoons", "Time together"]
+
+
+def test_filenames_are_not_sent_to_writer(tmp_path):
+    p = new_project()
+    add_photo(tmp_path, p, "school_years_age_10.jpg", jpg_bytes())
+    client = MockClient({"chapters": []})
+    generate_ai_story(client, "gpt-4.1-mini", p)
+    sent = client.args[0]["input"][1]["content"]
+    assert "age_10" not in sent and "filename" not in sent
+
+
+def test_place_lookup_prefers_city_and_ignores_ordinary_words():
+    from storybook.travel import lookup_place
+    assert lookup_place("Paris, France")["name"] == "Paris"
+    assert lookup_place("Shinjuku, Tokyo")["country"] == "Japan"
+    assert lookup_place("a trip to Japan")["name"] == "Japan"
+    assert lookup_place("Our first family home") is None
+
+
+def test_travel_demo_groups_trips_in_order(tmp_path):
+    from storybook.demo import make_travel_demo_project
+    from storybook.travel import build_trips
+    p = make_travel_demo_project(tmp_path)
+    stops, unmapped = build_trips(p["photos"])
+    assert [s["name"] for s in stops] == ["Tokyo", "Kyoto", "Singapore", "Sydney", "Paris"]
+    assert [len(s["photo_ids"]) for s in stops] == [2, 1, 2, 1, 2]
+    assert stops[0]["when"] == "2019-04-12 – 2019-04-13"
+    assert len(unmapped) == 1
+    assert [c["title"] for c in p["chapters"]][0] == "Tokyo, Japan · 2019-04"
+
+
+def test_trip_chapters_use_only_user_notes(tmp_path):
+    from storybook.travel import build_trips, chapters_from_trips
+    p = new_project()
+    add_photo(tmp_path, p, "a.jpg", jpg_bytes())
+    p["photos"][0].update({"place": "Kyoto", "event_date": "2019-04-15", "memory": "Green tea."})
+    stops, _ = build_trips(p["photos"])
+    chapters = chapters_from_trips(stops, p["photos"])
+    assert chapters[0]["text"] == "Green tea."
+    assert chapters[0]["photo_ids"] == [p["photos"][0]["id"]]

@@ -195,6 +195,29 @@ def jpeg_preview_bytes(path: Path, max_edge: int = 1280, quality: int = 80) -> b
         return buffer.getvalue()
 
 
+def photo_year(photo: dict) -> int | None:
+    """Year from the user's corrected date, falling back to the (unverified) camera date."""
+    value = photo.get("event_date") or photo.get("metadata", {}).get("capture_date") or ""
+    match = re.search(r"\b(18\d{2}|19\d{2}|20\d{2}|21\d{2})\b", str(value))
+    return int(match[1]) if match else None
+
+
+def select_photos(project: dict, years: tuple[int, int] | None = None,
+                  places: list[str] | None = None, include_undated: bool = True) -> list[dict]:
+    """The memories that match an 'Ask for a story' request, in chronological order."""
+    chosen = []
+    for photo in chronological_photos(project):
+        year = photo_year(photo)
+        if years and year is not None and not (years[0] <= year <= years[1]):
+            continue
+        if years and year is None and not include_undated:
+            continue
+        if places and photo.get("place", "").strip() not in places:
+            continue
+        chosen.append(photo)
+    return chosen
+
+
 def chronological_photos(project: dict) -> list[dict]:
     def sortkey(p):
         value = p.get("event_date", "") or p.get("metadata", {}).get("capture_date") or ""
