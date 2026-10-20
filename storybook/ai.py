@@ -102,7 +102,27 @@ def suggest_place(client, model: str, file_path: Path) -> dict:
     return {"place": place, "evidence": result.get("evidence", ""), "confidence": result.get("confidence", "low")}
 
 
-def _photo_fact(p: dict, share_metadata: bool) -> dict:
+LOCATION_LEVELS = ("city", "exact")
+
+
+def _camera_location(p: dict, level: str | None) -> str | None:
+    """Camera GPS for the writer, only when the user opts in.
+    'city'  -> the nearest known town/city (or ~10 km rounded coordinates if none is near).
+    'exact' -> the precise coordinates."""
+    gps = p.get("metadata", {}).get("gps")
+    if not gps or level not in LOCATION_LEVELS:
+        return None
+    lat, lon = gps["latitude"], gps["longitude"]
+    if level == "exact":
+        return f"{lat:.5f}, {lon:.5f}"
+    from .travel import CITIES, nearest_city
+    city = nearest_city(lat, lon)
+    if city:
+        return f"near {city}, {CITIES[city][2]}" if CITIES[city][2] != city else f"near {city}"
+    return f"approximately {lat:.1f}, {lon:.1f}"
+
+
+def _photo_fact(p: dict, share_metadata: bool, share_location: str | None = None) -> dict:
     m = p.get("metadata", {})
     # Filenames are deliberately not sent: names like "school_years_age_10.png" led the
     # writer to state ages and events the user never confirmed.
@@ -113,12 +133,15 @@ def _photo_fact(p: dict, share_metadata: bool) -> dict:
             "user_people": p.get("people", ""), "user_memory": p.get("memory", "")}
     if share_metadata:
         fact["exif_capture_date_unverified"] = m.get("capture_date")
-        # Raw GPS is not needed to narrate a location; keep coordinates on the user's device.
+    location = _camera_location(p, share_location)
+    if location:  # only present when the user chose to include camera locations
+        fact["camera_location_unverified"] = location
     return fact
 
 
 def generate_ai_story(client, model: str, project: dict, share_metadata: bool = False,
-                      book_label: str = "", guidance: str = "") -> list[dict]:
+                      book_label: str = "", guidance: str = "",
+                      share_location: str | None = None) -> list[dict]:
     photos = chronological_photos(project)
     if not photos:
         raise ValueError("Add at least one photo first.")
@@ -130,7 +153,7 @@ def generate_ai_story(client, model: str, project: dict, share_metadata: bool = 
         "user_story_request": project.get("story_request", ""),
         "photobook_type": book_label,
         "photobook_structure": guidance,
-        "photos": [_photo_fact(p, share_metadata) for p in photos],
+        "photos": [_photo_fact(p, share_metadata, share_location) for p in photos],
     }
     data = _json_response(client, model=model, name="story_chapters", schema=STORY_SCHEMA,
         messages=[
@@ -138,7 +161,9 @@ def generate_ai_story(client, model: str, project: dict, share_metadata: bool = 
                 "You are a careful memoir editor creating a storybook from photographs and personal notes. "
                 "User-entered people, places, and memories are the best available factual source. "
                 "Image observations are limited visual observations, not facts about identity or "
-                "events; EXIF timestamps can be wrong. Never invent names, dialogue, relationships, "
+                "events; EXIF timestamps can be wrong. Camera locations, if given, are unverified hints: "
+                "use them only to name the general town, city or region (prefer the user's own place "
+                "names when they differ), and never write coordinates or street addresses. Never invent names, dialogue, relationships, "
                 "locations, life events, motivations, or specific dates. If details are missing, "
                 "write modestly about the image and what it evokes, without asserting guesses. "
                 "Follow the photobook type and structure given. "

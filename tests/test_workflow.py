@@ -340,3 +340,47 @@ def test_sideways_phone_photo_is_displayed_upright(tmp_path):
     assert framed.size == (480, 360)
     remove_display_cache(tmp_path, p["id"], photo["id"])
     assert not list((tmp_path / p["id"] / "thumbs").glob("*.jpg"))
+
+
+def test_story_writer_camera_location_is_opt_in_and_city_level_by_default(tmp_path):
+    from PIL.TiffImagePlugin import IFDRational as Rat
+    p = new_project()
+    add_photo(tmp_path, p, "harbour.jpg", _gps_jpeg({1: "S", 2: (Rat(33, 1), Rat(51, 1), Rat(24, 1)),
+                                                     3: "E", 4: (Rat(151, 1), Rat(12, 1), Rat(55, 1))}))
+    add_photo(tmp_path, p, "outback.jpg", _gps_jpeg({1: "S", 2: (Rat(22, 1), Rat(0, 1), Rat(0, 1)),
+                                                     3: "E", 4: (Rat(140, 1), Rat(0, 1), Rat(0, 1))}))
+    add_photo(tmp_path, p, "scan.jpg", jpg_bytes())
+
+    def sent(**kw):
+        client = MockClient({"chapters": []})
+        generate_ai_story(client, "gpt-4.1-mini", p, **kw)
+        return {ph["photo_id"]: ph.get("camera_location_unverified")
+                for ph in json.loads(client.args[0]["input"][1]["content"])["photos"]}
+
+    ids = {x["filename"]: x["id"] for x in p["photos"]}
+    off = sent()
+    assert all(v is None for v in off.values())                           # default: nothing sent
+    city = sent(share_location="city")
+    assert city[ids["harbour.jpg"]] == "near Sydney, Australia"
+    assert city[ids["outback.jpg"]] == "approximately -22.0, 140.0"       # no known town nearby
+    assert city[ids["scan.jpg"]] is None
+    exact = sent(share_location="exact")
+    assert exact[ids["harbour.jpg"]].startswith("-33.85")
+
+
+def test_web_book_is_self_contained_and_safe(tmp_path):
+    from storybook.book_html import build_book_data, generate_html
+    from storybook.demo import make_travel_demo_project
+    p = make_travel_demo_project(tmp_path)
+    p["title"] = 'Trip </script><script>alert(1)</script> & more'
+    p["chapters"][0]["text"] = "<img src=x onerror=alert(1)>"
+    html = generate_html(p, tmp_path)
+    assert html.count("</script>") == 1                       # user text can't close the script tag
+    assert "<img src=x" not in html                            # nor inject markup
+    assert html.count("data:image/jpeg;base64,") == 8          # 8 photos in chapters, embedded
+    assert "<title>Trip &lt;/script&gt;" in html
+    city = build_book_data(p, tmp_path)["stops"][0]
+    assert (city["lat"], city["lon"]) == (35.6762, 139.6503)   # snapped to Tokyo centre by default
+    exact = build_book_data(p, tmp_path, precise_map=True)["stops"][0]
+    assert (exact["lat"], exact["lon"]) == (35.6895, 139.6917) # the photo's own location
+    assert build_book_data(p, tmp_path, include_map=False)["stops"] == []

@@ -28,7 +28,7 @@ The app walks you through five numbered steps (a step bar at the top, a short no
 | 2 · Understand memories | Enrich | When & where from EXIF, AI photo insights (optional), your own words |
 | 3 · Ask for a story | Reason | A story request, filtered by years and places, written as a local draft or by AI |
 | 4 · Story views | Experience | **Travels** world map, timeline, photo strip, read view |
-| 5 · Book | Share | A4 PDF export |
+| 5 · Book | Share | A4 PDF **and** an interactive web book (one .html file) |
 
 ## Start it
 
@@ -57,7 +57,7 @@ To use your own photos, choose **＋ New photobook** → pick a type → **Link 
 2. Click any AI button and the app will ask for it (kept for the session only), or enter it under **AI settings** in the sidebar, or set `OPENAI_API_KEY` in the launch environment.
 3. Use **✨ Describe** or **✨ Describe all photos with AI** to add *visible-only* observations. Note: no identification/face recognition is performed.
 4. Correct the captions, date, people, places and memories yourself.
-5. In **Ask for a story**, tick consent and choose **Write with AI**. Your story request is passed to the writer. Optionally permit camera timestamps to be included (GPS is *never* sent).
+5. In **Ask for a story**, tick consent and choose **Write with AI**. Your story request is passed to the writer. Optionally include camera dates and/or **camera locations**: either the *nearest town or city* (recommended, e.g. "near Kyoto, Japan") or *exact coordinates* (with a warning). The writer is told to use locations only to name the general place and never to print coordinates or addresses. Both are off by default.
 6. Review/edit generated chapters and export the book.
 
 The model is configurable in the sidebar, defaulting to `gpt-4.1-mini`. The implementation uses the OpenAI **Responses API** with base64-encoded, resized, EXIF-stripped images and structured JSON replies. A compatible API model/account is required; use **Write a draft** if a key is not available. The local draft is *not AI-generated prose*: it assembles user-provided notes and photo observations into editable chapters, intentionally without inventing biographical details.
@@ -84,6 +84,18 @@ The model is configurable in the sidebar, defaulting to `gpt-4.1-mini`. The impl
 
 The Travels view places each photo using its **camera location** (EXIF GPS), or, if there is none, the **place you typed** (which can come from an accepted AI suggestion, below), matched against a built-in list of about 170 well-known cities and countries (`storybook/travel.py`). No online geocoding service is called, and coordinates never leave your computer. Photos taken close together in time and place (within 60 km) are grouped into one destination, numbered in the order visited and joined by route lines. Places that can't be matched are listed as *not on the map*. Add a city or country to place them, or extend the list in `travel.py`. The map is drawn with pydeck, which is installed with Streamlit.
 
+## Interactive web book
+
+Step 5 can also export the story as **one self-contained `.html` file** that opens in any browser and can be emailed or shared like the PDF. It includes:
+
+- **Book**: page through a cover, opening note, one page per chapter and an ending. Use the buttons, the chapter menu, ← → keys or swipe on a phone.
+- **Scroll**: the whole story on one page.
+- **Timeline**: every photo in date order with its place and memory.
+- **Map** (optional): numbered places joined in visit order, with photo pop-ups. Shown at **town/city level by default**; exact locations only if you tick that option. The map loads Leaflet and CARTO/OpenStreetMap tiles when opened, so it needs an internet connection; without one it lists the places instead.
+- **Photo viewer**: click any photo for a large view with its date, place, people and memory.
+
+Photos are embedded (upright and resized), so the rest works offline. All user text is inserted as plain text, so it can't run as code. The app shows a live preview of the web book under the download buttons. Code: `storybook/book_html.py`.
+
 ## AI place suggestions
 
 For photos with no camera location, **📍 Suggest place** (per photo) or **📍 Suggest places with AI** (all at once) asks the model where the photo might have been taken, **only from clear visible evidence**: a well-known landmark, readable signs or tickets, or a distinctive landscape. It is told never to use people's faces or appearance, never to identify anyone, and to answer at city/country level at most. If the clues are weak it says so and suggests nothing. Each suggestion shows its evidence and confidence, and **nothing is saved to the photo or the map until you click "Use this place"**. The image sent is resized with EXIF/GPS removed.
@@ -91,7 +103,7 @@ For photos with no camera location, **📍 Suggest place** (per photo) or **📍
 ## Data and privacy
 
 - Storage defaults to `data/<project-id>/project.json` plus `images/` for the **original uploaded files**. Set `LIFESTORY_DATA_DIR` to store elsewhere. Data is not encrypted at rest.
-- All files remain local unless **you explicitly invoke an OpenAI action**. Live photo calls upload resized JPEG versions with embedded EXIF removed. GPS coordinates are never included in requests. Raw EXIF dates are excluded from story-generation requests by default.
+- All files remain local unless **you explicitly invoke an OpenAI action**. Live photo calls upload resized JPEG versions with embedded EXIF removed. Photo uploads to the AI never include GPS. Camera dates and camera locations are excluded from story-writing requests unless you tick those options; locations default to the nearest town/city rather than exact coordinates.
 - The story-generation call sends the text context you saved (caption, people, place, memories, edited observations, instructions), plus dates if explicitly permitted. Personal family notes may contain sensitive information; confirm you have appropriate consent and organisational approval before using live AI on personal images.
 - **Delete this project** removes its folder and story data from this local installation; copies/downloads made elsewhere are not affected.
 - **Security boundary:** THIS IS A SINGLE-USER, LOCAL PROTOTYPE. It has no authentication, user isolation, content scanning, encryption, or production audit controls. **Do not deploy it on a shared/public server** without adding access control, tenant-specific encrypted storage, deletion/retention policy, and abuse controls.
@@ -116,6 +128,7 @@ app.py                    Streamlit user interface (Life Story theme)
 storybook/core.py         File validation, EXIF, storage, chronology and story filtering
 storybook/ai.py           Responses API image observation and story drafting
 storybook/book_pdf.py     A4 PDF export using ReportLab
+storybook/book_html.py    Interactive web book export (single HTML file)
 storybook/book_types.py   Photobook types: prompts, grouping, main view, cover label
 storybook/travel.py       Travels: built-in place list, trip grouping, chapters from trips
 storybook/demo.py         Synthetic family and travel demo projects

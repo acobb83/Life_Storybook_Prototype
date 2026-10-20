@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from storybook.ai import DEFAULT_MODEL, analyse_photo, generate_ai_story, suggest_place
+from storybook.book_html import generate_html
 from storybook.book_pdf import generate_pdf
 from storybook.book_types import (BOOK_TYPES, GROUPING_TEXT, TYPE_ORDER, apply_type, get_type,
                                   local_chapters)
@@ -59,6 +61,7 @@ h1, h2, h3, h4 {color: #1F2D4A}
 def save(p):
     save_project(ROOT, p)
     st.session_state.pop("rendered_pdf", None)
+    st.session_state.pop("rendered_html", None)
 
 
 def rerun_notice(note: str):
@@ -262,7 +265,7 @@ STEPS = ["Link & bring in", "Understand memories", "Ask for a story", "Story vie
 with_notes = sum(bool(p.get("memory", "").strip() or p.get("caption", "").strip()) for p in photos_all)
 has_story = bool(project.get("chapters"))
 STEP_DONE = [bool(photos_all), bool(photos_all) and with_notes == len(photos_all), has_story, has_story,
-             bool(st.session_state.get("rendered_pdf"))]
+             bool(st.session_state.get("rendered_pdf") or st.session_state.get("rendered_html"))]
 STEP_HELP = [
     "Add the photos for this photobook. When they're in, go to the next step.",
     "Check when and where each photo was taken and add what you remember. Notes are optional, but "
@@ -270,7 +273,7 @@ STEP_HELP = [
     f"Say what story you'd like, then write a draft (no AI) or write it with AI. Chapters for a "
     f"{btype['label'].lower()} are grouped by {GROUPING_TEXT[btype['grouping']]}.",
     "See your story as a timeline, map, photo strip or chapters to read. Go back to step 3 to edit it.",
-    "Make the printable PDF photobook and download it.",
+    "Make a printable PDF and/or an interactive web book you can open in any browser, then download them.",
 ]
 if st.session_state.get("step_for") != project["id"]:
     # Opening a photobook: start where there is something to do.
@@ -373,7 +376,7 @@ if step == 2:
         unlocated = [p for p in photos_all if needs_location(p)]
         a1, a2 = st.columns(2)
         if a1.button("✨ Describe all photos with AI", use_container_width=True,
-                     help="Sends one reduced-size, EXIF-stripped photo at a time; GPS is never sent.") \
+                     help="Sends one reduced-size photo at a time with its camera data (date, location) removed.") \
                 and require_ai("Describe all photos with AI"):
             progress = st.progress(0)
             errors = []
@@ -592,7 +595,22 @@ if step == 3:
         st.markdown("**Story writer** (AI)")
         consent = st.checkbox("Send the notes for these memories to OpenAI to write the story.",
                               key="story_consent")
-        share_exif = st.checkbox("Include camera dates (never GPS)", value=False)
+        share_exif = st.checkbox("Include camera dates", value=False)
+        located_count = sum(bool(p.get("metadata", {}).get("gps")) for p in matching)
+        share_gps = st.checkbox(f"Include camera locations ({located_count} of {len(matching)} photos have one)",
+                                value=False, disabled=not located_count,
+                                help="Lets the writer mention where photos were taken even when you haven't "
+                                     "typed a place.")
+        location_level = None
+        if share_gps:
+            level_label = st.radio("How precise?", ["Nearest town or city (recommended)", "Exact coordinates"],
+                                   horizontal=True, key="gps_level")
+            location_level = "city" if level_label.startswith("Nearest") else "exact"
+            if location_level == "exact":
+                st.warning("Exact coordinates can reveal private places such as a home or school. "
+                           "They're sent to OpenAI but the writer is told never to print them.")
+            else:
+                st.caption("Sends e.g. “near Kyoto, Japan”. Exact coordinates stay on this computer.")
         if st.button("✨ Write with AI", use_container_width=True,
                      disabled=not (matching and consent),
                      help="Tick the box above first. Replaces the current chapters.") \
@@ -602,7 +620,8 @@ if step == 3:
                     project["chapters"] = generate_ai_story(get_client(api_key), model, story_project,
                                                             share_metadata=share_exif,
                                                             book_label=btype["label"],
-                                                            guidance=btype["guidance"])
+                                                            guidance=btype["guidance"],
+                                                            share_location=location_level)
                 save(project)
                 st.session_state["step"] = 4
                 rerun_notice("Your story is ready. Check the details before sharing.")
@@ -819,17 +838,52 @@ if step == 5:
         unassigned = [p for p in photos_all if p["id"] not in used]
         if unassigned:
             st.caption(f"{len(unassigned)} photo(s) in this photobook are not part of this story and won't be in the book.")
-        if st.button("Prepare PDF book", type="primary"):
-            try:
-                with st.spinner("Building your illustrated book..."):
-                    st.session_state["rendered_pdf"] = generate_pdf(project, ROOT, mark_draft=draft_watermark)
-                st.success("PDF ready. Review it before sharing.")
-            except Exception as exc:
-                st.error(f"PDF export failed: {exc}")
-        if pdf_bytes := st.session_state.get("rendered_pdf"):
-            st.download_button("⬇ Download photobook PDF", data=pdf_bytes,
-                               file_name=f"{project['book_type']}-story.pdf", mime="application/pdf", type="primary")
-            st.caption(f"{len(pdf_bytes) / 1024:.0f} KB • A4 portrait")
+        safe_name = project["book_type"] + "-story"
+        col_pdf, col_web = st.columns(2, gap="large")
+        with col_pdf.container(border=True):
+            st.markdown("**📄 Printable PDF**")
+            st.caption("An A4 book to print, or attach to an email.")
+            if st.button("Prepare PDF", type="primary", use_container_width=True):
+                try:
+                    with st.spinner("Building your illustrated book..."):
+                        st.session_state["rendered_pdf"] = generate_pdf(project, ROOT, mark_draft=draft_watermark)
+                except Exception as exc:
+                    st.error(f"PDF export failed: {exc}")
+            if pdf_bytes := st.session_state.get("rendered_pdf"):
+                st.download_button("⬇ Download PDF", data=pdf_bytes, file_name=f"{safe_name}.pdf",
+                                   mime="application/pdf", use_container_width=True)
+                st.caption(f"Ready · {len(pdf_bytes) / 1024:.0f} KB · A4 portrait")
+        with col_web.container(border=True):
+            st.markdown("**🌐 Interactive web book**")
+            st.caption("One file that opens in any browser: turn the pages, scroll, see a timeline and map, "
+                       "and click photos to enlarge. Share it like the PDF.")
+            has_places = bool(build_trips([p for p in photos_all if p["id"] in used])[0])
+            include_map = st.checkbox("Include a map of places", value=has_places, disabled=not has_places,
+                                      help="Needs an internet connection when viewed (to load map tiles).")
+            precise_map = False
+            if include_map:
+                precise_map = st.checkbox("Show exact photo locations", value=False,
+                                          help="Off: places are shown at town or city level, which is safer "
+                                               "for a file you share.")
+                if precise_map:
+                    st.warning("Exact locations can reveal private places such as a home. Anyone with the file "
+                               "can see them.")
+            if st.button("Prepare web book", type="primary", use_container_width=True):
+                try:
+                    with st.spinner("Building your web book..."):
+                        st.session_state["rendered_html"] = generate_html(
+                            project, ROOT, mark_draft=draft_watermark,
+                            include_map=include_map, precise_map=precise_map)
+                except Exception as exc:
+                    st.error(f"Web book export failed: {exc}")
+            if html_doc := st.session_state.get("rendered_html"):
+                st.download_button("⬇ Download web book (.html)", data=html_doc.encode("utf-8"),
+                                   file_name=f"{safe_name}.html", mime="text/html", use_container_width=True)
+                st.caption(f"Ready · {len(html_doc.encode('utf-8')) / 1024:.0f} KB · photos included in the file")
+        if html_doc := st.session_state.get("rendered_html"):
+            st.markdown("#### Preview of the web book")
+            st.caption("This is exactly what people will see when they open the file.")
+            components.html(html_doc, height=780, scrolling=True)
         st.markdown("#### Chapters")
         for idx, chapter in enumerate(project["chapters"], 1):
             st.write(f"**{idx:02d} · {chapter.get('title', 'Untitled')}** · {len(chapter.get('photo_ids', []))} photos")
@@ -856,4 +910,5 @@ else:
 
 st.divider()
 st.caption("Privacy: photos and story text are stored on this computer under the data/ folder. Only the AI buttons "
-           "send reduced images or text to OpenAI, and GPS is never sent. Check all AI-written text before sharing.")
+           "send reduced images or text to OpenAI. Photos are sent without their camera data; locations are only "
+           "sent if you tick that option in the story writer. Check all AI-written text before sharing.")
