@@ -12,8 +12,9 @@ from storybook.book_pdf import generate_pdf
 from storybook.book_types import (BOOK_TYPES, GROUPING_TEXT, TYPE_ORDER, apply_type, get_type,
                                   local_chapters)
 from storybook.core import (InvalidPhoto, add_photo, chronological_photos, delete_project,
-                            list_projects, load_project, new_project, photo_path, photo_year,
-                            register_heif, save_project, select_photos)
+                            display_image, list_projects, load_project, new_project, photo_path,
+                            photo_year, register_heif, remove_display_cache, reread_metadata,
+                            save_project, select_photos)
 from storybook.demo import make_demo_project, make_travel_demo_project
 from storybook.travel import build_trips, chapters_from_trips, lookup_place
 
@@ -99,6 +100,22 @@ def story_photo_ids(project: dict) -> list[str]:
     """Photos in story order: by chapter if a story exists, otherwise by date."""
     ids = [pid for ch in project.get("chapters", []) for pid in ch.get("photo_ids", [])]
     return ids or [p["id"] for p in chronological_photos(project)]
+
+
+NO_GPS_HELP = ("**Why a photo might have no location**\n\n"
+               "- **iPhone/iPad uploads through a web browser** usually remove location. Upload the original "
+               "file from a computer instead (e.g. via OneDrive, iCloud for Windows or a USB copy). Newer iOS "
+               "versions may offer an **Options → Location** setting in the photo picker.\n"
+               "- **Photos sent through WhatsApp, Messenger, email \"reduce size\" or social media** lose "
+               "their location. Use the original from the phone instead.\n"
+               "- **Location Services was off** for the camera when the photo was taken.\n"
+               "- **Scans, screenshots and downloaded images** never have one.\n\n"
+               "You can still put these on the map by typing a place, or with **📍 Suggest place**.")
+
+
+def shown(p: dict, grid: bool = False) -> bytes:
+    """Upright display copy of a photo; grid=True gives a fixed 4:3 frame so rows line up."""
+    return display_image(ROOT, project["id"], p, frame=(480, 360) if grid else None)
 
 
 def needs_location(p: dict) -> bool:
@@ -305,6 +322,7 @@ if step == 1:
         st.caption("HEIC/HEIF needs the optional `pillow-heif` package. JPEG, PNG and WebP work without it.")
     if st.button("Bring in selected photos", type="primary", disabled=not bool(uploaded)):
         added, skipped, errors = 0, 0, []
+        before = {p["id"] for p in project["photos"]}
         for file in uploaded or []:
             try:
                 if add_photo(ROOT, project, file.name, file.getvalue()):
@@ -313,10 +331,20 @@ if step == 1:
                     skipped += 1
             except (InvalidPhoto, OSError, ValueError) as exc:
                 errors.append(f"{file.name}: {exc}")
+        new_photos = [p for p in project["photos"] if p["id"] not in before]
+        located = sum(bool(p["metadata"].get("gps")) for p in new_photos)
+        dated = sum(bool(p["metadata"].get("capture_date")) for p in new_photos)
         if added:
             st.session_state.pop("rendered_pdf", None)
         st.success(f"Brought in {added} photos; skipped {skipped} duplicates. "
                    "Bring in more, or click **Next** below when you're ready.")
+        if new_photos:
+            st.write(f"📍 **{located} of {len(new_photos)}** had a camera location · "
+                     f"📅 **{dated} of {len(new_photos)}** had a camera date")
+            if located < len(new_photos):
+                with st.expander(f"{len(new_photos) - located} photo(s) arrived without a location. Why?",
+                                 expanded=located == 0):
+                    st.markdown(NO_GPS_HELP)
         for error in errors:
             st.error(error)
     if photos_all:
@@ -324,7 +352,7 @@ if step == 1:
         previews = st.columns(4)
         for idx, photo in enumerate(chronological_photos(project)):
             with previews[idx % 4]:
-                st.image(str(photo_path(ROOT, project["id"], photo)), use_container_width=True)
+                st.image(shown(photo, grid=True), use_container_width=True)
                 st.caption(photo.get("caption") or photo["filename"])
 
 # ------------------------ Understand memories ------------------------
@@ -385,6 +413,10 @@ if step == 2:
             else:
                 rerun_notice(f"AI suggested a place for {found} of {len(unlocated)} photos. "
                              "Open each photo below to accept or dismiss.")
+        if st.button("🔄 Re-check camera data", help="Re-reads dates and locations from the photo files you "
+                     "already uploaded. Your own notes are not changed."):
+            found = reread_metadata(ROOT, project)
+            rerun_notice(f"Re-checked {len(photos_all)} photos: {found} have a camera location.")
         st.caption("AI steps are optional: you can type everything yourself."
                    + ("" if api_key else " You'll be asked for an API key the first time you use one."))
         for p in chronological_photos(project):
@@ -394,7 +426,7 @@ if step == 2:
             with st.expander(f"{done} {friendly}{flag}", expanded=False):
                 left, right = st.columns([1, 1.25], gap="large")
                 with left:
-                    st.image(str(photo_path(ROOT, project["id"], p)), use_container_width=True)
+                    st.image(shown(p), use_container_width=True)
                     m = p["metadata"]
                     gps = m.get("gps")
                     known = lookup_place(p.get("place", ""))
@@ -404,11 +436,14 @@ if step == 2:
                         on_map = f"{known['name']}" + (f", {known['country']}" if known["country"] != known["name"] else "") + \
                                  " (from the place entered)"
                     else:
-                        on_map = "Not on the map yet"
+                        on_map = "Not on the map yet (no location in this file)"
                     st.markdown("**When & where**")
                     st.caption(f"Camera date: {m.get('capture_date') or 'Not available'} (unverified)  \n"
                                f"Map: {on_map}  \n"
                                f"Camera: {m.get('camera') or 'Not available'}")
+                    if not gps:
+                        with st.popover("Why no camera location?"):
+                            st.markdown(NO_GPS_HELP)
                     if p.get("question"):
                         st.info("💬 " + p["question"])
                     b_desc, b_place = st.columns(2)
@@ -471,6 +506,7 @@ if step == 2:
                                 chapter["photo_ids"] = [pid for pid in chapter["photo_ids"] if pid != p["id"]]
                             save(project)
                             location.unlink(missing_ok=True)
+                            remove_display_cache(ROOT, project["id"], p["id"])
                             rerun_notice("Photo removed from this photobook.")
                 with right:
                     with st.form("edit_photo_" + p["id"]):
@@ -540,7 +576,7 @@ if step == 3:
                              flt.get("places") or None, flt.get("include_undated", True))
     st.markdown(f"**{len(matching)} of {len(photos_all)} memories** match this request.")
     if matching:
-        st.image([str(photo_path(ROOT, project["id"], p)) for p in matching[:8]], width=110,
+        st.image([shown(p, grid=True) for p in matching[:8]], width=110,
                  caption=[(p.get("caption") or p["filename"])[:22] for p in matching[:8]])
     story_project = dict(project, photos=matching)
     b1, b2 = st.columns(2)
@@ -620,7 +656,7 @@ def view_timeline(ordered: list[dict]):
         st.markdown(f"##### {ch.get('title', 'Untitled')}")
         for p in items:
             c1, c2 = st.columns([1, 3], gap="medium")
-            c1.image(str(photo_path(ROOT, project["id"], p)), use_container_width=True)
+            c1.image(shown(p, grid=True), use_container_width=True)
             when = p.get("event_date") or p["metadata"].get("capture_date") or "Date unknown"
             where = p.get("place") or "Place not recorded"
             c2.markdown(f"**{when}** · {where}")
@@ -702,7 +738,7 @@ def view_travels(ordered: list[dict]):
     for pid in stop["photo_ids"]:
         p = by_id[pid]
         c1, c2 = st.columns([1, 2], gap="medium")
-        c1.image(str(photo_path(ROOT, project["id"], p)), use_container_width=True)
+        c1.image(shown(p), use_container_width=True)
         c2.markdown(f"**{p.get('caption') or p['filename']}**")
         c2.caption(f"{p.get('event_date') or p['metadata'].get('capture_date') or ''} · "
                    f"{p.get('place') or ''}")
@@ -725,7 +761,7 @@ def view_travels(ordered: list[dict]):
 
 
 def view_strip(ordered: list[dict]):
-    st.image([str(photo_path(ROOT, project["id"], p)) for p in ordered], width=220,
+    st.image([shown(p, grid=True) for p in ordered], width=220,
              caption=[f"{p.get('caption') or p['filename']} · "
                       f"{p.get('event_date') or p['metadata'].get('capture_date') or ''}" for p in ordered])
 
@@ -743,7 +779,7 @@ def view_read(ordered: list[dict]):
         st.write(ch.get("text", ""))
         pics = [by_id[i] for i in ch.get("photo_ids", []) if i in by_id]
         if pics:
-            st.image([str(photo_path(ROOT, project["id"], p)) for p in pics], width=320)
+            st.image([shown(p) for p in pics], width=320)
         st.divider()
 
 

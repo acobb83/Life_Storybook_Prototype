@@ -258,3 +258,85 @@ def test_pdf_cover_uses_type_label(tmp_path):
     p["cover_kicker"] = "IN LOVING MEMORY"
     text = " ".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(generate_pdf(p, tmp_path))).pages)
     assert "IN LOVING MEMORY" in text
+
+
+def _gps_jpeg(gps: dict | None = None, date_in_subifd: str | None = None, xmp: bytes | None = None) -> bytes:
+    img = Image.new("RGB", (400, 300), "#88aacc")
+    exif = Image.Exif()
+    if date_in_subifd:
+        exif.get_ifd(0x8769)[36867] = date_in_subifd
+    if gps:
+        exif.get_ifd(0x8825).update(gps)
+    buff = io.BytesIO()
+    img.save(buff, format="JPEG", exif=exif)
+    data = buff.getvalue()
+    if xmp:
+        seg = b"http://ns.adobe.com/xap/1.0/\x00<x:xmpmeta><rdf:Description " + xmp + b"/></x:xmpmeta>"
+        data = data[:2] + b"\xff\xe1" + (len(seg) + 2).to_bytes(2, "big") + seg + data[2:]
+    return data
+
+
+def test_gps_read_from_common_phone_formats():
+    from PIL.TiffImagePlugin import IFDRational as Rat
+    sydney = (-33.8688, 151.2093)
+    cases = [
+        _gps_jpeg({1: "S", 2: (Rat(33, 1), Rat(52, 1), Rat(768, 100)),
+                   3: "E", 4: (Rat(151, 1), Rat(12, 1), Rat(3348, 100))}, "2024:11:21 18:05:00"),
+        _gps_jpeg({1: "S", 2: (Rat(33, 1), Rat(52128, 1000), Rat(0, 0)),       # blank seconds
+                   3: "E", 4: (Rat(151, 1), Rat(12558, 1000), Rat(0, 0))}),
+        _gps_jpeg({1: "S", 2: (Rat(338688, 10000),), 3: "E", 4: (Rat(1512093, 10000),)}),  # degrees only
+        _gps_jpeg({1: "S\x00", 2: (Rat(33, 1), Rat(52, 1), Rat(768, 100)),     # padded hemisphere
+                   3: "E\x00", 4: (Rat(151, 1), Rat(12, 1), Rat(3348, 100))}),
+        _gps_jpeg(xmp=b'exif:GPSLatitude="33,52.128S" exif:GPSLongitude="151,12.558E"'),  # XMP only
+    ]
+    for data in cases:
+        with Image.open(io.BytesIO(data)) as img:
+            img.load()
+            gps = extract_metadata(img, data)["gps"]
+        assert gps and (round(gps["latitude"], 3), round(gps["longitude"], 3)) == (round(sydney[0], 3), round(sydney[1], 3))
+    with Image.open(io.BytesIO(cases[0])) as img:
+        assert extract_metadata(img, cases[0])["capture_date"] == "2024-11-21"  # DateTimeOriginal in Exif sub-IFD
+
+
+def test_gps_zero_zero_placeholder_ignored():
+    from PIL.TiffImagePlugin import IFDRational as Rat
+    zero = (Rat(0, 1), Rat(0, 1), Rat(0, 1))
+    data = _gps_jpeg({1: "N", 2: zero, 3: "E", 4: zero})
+    with Image.open(io.BytesIO(data)) as img:
+        assert extract_metadata(img, data)["gps"] is None
+
+
+def test_reread_updates_existing_photos_and_keeps_notes(tmp_path):
+    from PIL.TiffImagePlugin import IFDRational as Rat
+    from storybook.core import reread_metadata
+    p = new_project()
+    add_photo(tmp_path, p, "a.jpg", _gps_jpeg({1: "S", 2: (Rat(33, 1), Rat(52, 1), Rat(0, 0)),
+                                               3: "E", 4: (Rat(151, 1), Rat(12, 1), Rat(0, 0))}))
+    p["photos"][0]["metadata"]["gps"] = None          # as an older reader would have stored it
+    p["photos"][0]["memory"] = "Harbour at dusk."
+    assert reread_metadata(tmp_path, p) == 1
+    assert p["photos"][0]["metadata"]["gps"]["latitude"] < -33
+    assert p["photos"][0]["memory"] == "Harbour at dusk."
+
+
+def test_sideways_phone_photo_is_displayed_upright(tmp_path):
+    from storybook.core import display_image, remove_display_cache
+    portrait = Image.new("RGB", (300, 400), "#9cc8e8")
+    portrait.paste(Image.new("RGB", (300, 100), "#5d8a5e"), (0, 300))          # grass at the bottom
+    stored = portrait.transpose(Image.Transpose.ROTATE_90)                       # saved sideways...
+    exif = Image.Exif()
+    exif[274] = 6                                                                # ...with "rotate to view"
+    buff = io.BytesIO()
+    stored.save(buff, "JPEG", exif=exif)
+    p = new_project()
+    add_photo(tmp_path, p, "phone.jpg", buff.getvalue())
+    photo = p["photos"][0]
+    assert photo["metadata"]["dimensions"] == [300, 400]
+    shown = Image.open(io.BytesIO(display_image(tmp_path, p["id"], photo)))
+    assert shown.size == (300, 400)
+    r, g, b = shown.getpixel((150, 380))
+    assert g > r and g > b                                                       # grass is at the bottom
+    framed = Image.open(io.BytesIO(display_image(tmp_path, p["id"], photo, frame=(480, 360))))
+    assert framed.size == (480, 360)
+    remove_display_cache(tmp_path, p["id"], photo["id"])
+    assert not list((tmp_path / p["id"] / "thumbs").glob("*.jpg"))
