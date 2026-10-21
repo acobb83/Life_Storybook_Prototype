@@ -18,6 +18,7 @@ from storybook.core import (InvalidPhoto, add_photo, chronological_photos, delet
                             load_project, new_project, photo_path, photo_year, register_heif,
                             remove_display_cache, reread_metadata, save_project, select_photos)
 from storybook.demo import make_demo_project, make_travel_demo_project
+from storybook.prototype_notes import BANNER, EXPERIENCE, KINDS, NOTES, SOURCE_PLANS, notes_by_kind
 from storybook.travel import (autofill_from_camera, build_trips, camera_place_name, chapters_from_trips,
                                lookup_place)
 
@@ -56,7 +57,62 @@ h1, h2, h3, h4 {color: #1F2D4A}
 [data-testid="stMetric"] {background: #FFFFFF; border: 1px solid #E6DFEF; padding: 12px 15px;
                           border-radius: 12px}
 [data-testid="stSidebar"] .ls-title {font-size: 1.8rem}
+/* Prototype markers: what is only here for the prototype, and what changes in the full app */
+.ls-tag {display: inline-block; border-radius: 999px; padding: 1px 9px; font-size: .7rem; font-weight: 700;
+         white-space: nowrap; vertical-align: middle; cursor: help}
+.ls-tag-proto {background: #FCE9C8; color: #7A4A00} .ls-tag-change {background: #DCE8F8; color: #1F4E8C}
+.ls-tag-planned {background: #EEE9F4; color: #6B6385}
+.ls-note {border-left: 4px solid; border-radius: 0 10px 10px 0; padding: 7px 12px; margin: 4px 0 10px 0;
+          font-size: .83rem; color: #3A4660; line-height: 1.45}
+.ls-note-proto {background: #FFF7EA; border-color: #E8A33C} .ls-note-change {background: #F1F6FD; border-color: #5B8FD6}
+.ls-note-planned {background: #F7F4FA; border-color: #A28AC9}
+.ls-note b.ls-note-title {color: #1F2D4A; margin-left: 4px}
+.ls-banner {background: #FFF7EA; border: 1px solid #F1D29B; border-radius: 12px; padding: 10px 14px;
+            margin: 0 0 14px 0; font-size: .86rem; color: #3A4660}
+.ls-banner .ls-legend {margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: .78rem}
+.ls-proto-pill {display: inline-block; background: #FCE9C8; color: #7A4A00; border-radius: 999px;
+                padding: 1px 10px; font-size: .7rem; font-weight: 700; letter-spacing: .08em}
 </style>""", unsafe_allow_html=True)
+
+
+# ------------- Prototype markers (sidebar toggle "Show what changes in the full app") -------------
+def notes_on() -> bool:
+    return st.session_state.get("show_proto_notes", True)
+
+
+def proto_tag(kind: str, tip: str = "") -> str:
+    icon, label, meaning, _ = KINDS[kind]
+    return (f'<span class="ls-tag ls-tag-{kind}" title="{html.escape(tip or meaning, quote=True)}">'
+            f'{icon} {label}</span>')
+
+
+def proto_badge(key: str) -> str:
+    """A small inline marker for a feature; hover for what changes. Empty when markers are off."""
+    if not notes_on():
+        return ""
+    n = NOTES[key]
+    return " " + proto_tag(n["kind"], f"{n['title']}. Here: {n['here']} Full app: {n['full']}")
+
+
+def proto_note(key: str, where=None):
+    """A short note under a feature: what the prototype does here, and what the full app does."""
+    if not notes_on():
+        return
+    n = NOTES[key]
+    first = "Why it's here" if n["kind"] == "proto" else "Here" if n["kind"] == "change" else "Today"
+    (where or st).markdown(
+        f'<div class="ls-note ls-note-{n["kind"]}">{proto_tag(n["kind"])}<b class="ls-note-title">'
+        f'{html.escape(n["title"])}</b><br><b>{first}:</b> {html.escape(n["here"])}<br>'
+        f'<b>Full app:</b> {html.escape(n["full"])}</div>', unsafe_allow_html=True)
+
+
+def proto_banner():
+    if not notes_on():
+        return
+    legend = "".join(f'<span>{proto_tag(k)} {html.escape(short)}</span>' for k, (*_, short) in KINDS.items())
+    st.markdown(f'<div class="ls-banner">🧪 <b>{html.escape(BANNER)}</b><div class="ls-legend">{legend}'
+                f'<span>Anything unmarked is the experience as intended.</span></div></div>',
+                unsafe_allow_html=True)
 
 
 def save(p):
@@ -165,7 +221,7 @@ if shared_token:
 
     components.html(shared_book(shared["id"], shared.get("updated_at", ""), shared_token),
                     height=880, scrolling=True)
-    st.caption("Shared with Life Story · read-only")
+    st.caption("Shared with Life Story · read-only · prototype link: no sign-in, so anyone with it can view")
     st.stop()
 
 
@@ -189,6 +245,19 @@ def share_url(token: str) -> tuple[str, bool]:
 with st.sidebar:
     st.markdown('<p class="ls-title">Life Story</p>', unsafe_allow_html=True)
     st.caption("Human memories. Thoughtfully preserved.")
+    st.markdown('<span class="ls-proto-pill">🧪 PROTOTYPE</span>', unsafe_allow_html=True)
+    st.toggle("Show what changes in the full app", value=True, key="show_proto_notes",
+              help="Marks what is only here for the prototype, what is a stand-in that will be built "
+                   "differently, and what is planned. Turn off for a clean walkthrough.")
+    if notes_on():
+        with st.expander("Prototype guide: what's real, what changes", expanded=False):
+            st.markdown("**✓ The experience, as intended**")
+            st.markdown("\n".join(f"- {item}" for item in EXPERIENCE))
+            for kind, items in notes_by_kind().items():
+                icon, label, meaning, _ = KINDS[kind]
+                st.markdown(f"**{icon} {label}**  \n*{meaning}*")
+                st.markdown("\n".join(f"- **{n['title']}**: {n['full']}" for _, n in items))
+    st.divider()
     projects = list_projects(ROOT)
     if not projects:
         p = new_project()
@@ -210,7 +279,8 @@ with st.sidebar:
     if st.button("＋ New photobook", use_container_width=True, type="primary"):
         st.session_state["choosing_type"] = True
         st.rerun()
-    st.caption("Or try a fictional demo:")
+    st.markdown(f'<div style="font-size:.85rem;color:#53617B;margin-top:.4rem">Or try a fictional demo:'
+                f'{proto_badge("demo")}</div>', unsafe_allow_html=True)
     d1, d2 = st.columns(2)
     if d1.button("📖 Life", use_container_width=True,
                  help="A fictional family life story with four synthetic illustrations."):
@@ -226,7 +296,8 @@ with st.sidebar:
         st.session_state.pop("choosing_type", None)
         rerun_notice("Loaded a fictional travel story. The map is in step 4 · Story views.")
     st.divider()
-    with st.expander("AI settings (optional)", expanded=False):
+    with st.expander("AI settings (optional)" + (" · 🧪 prototype only" if notes_on() else ""), expanded=False):
+        proto_note("ai_settings")
         typed_key = st.text_input("OpenAI API key", type="password", value=st.session_state.get("api_key", ""),
                                   placeholder="sk-... (or set OPENAI_API_KEY)",
                                   help="Held in this session only; never written to project files.")
@@ -254,6 +325,7 @@ with st.sidebar:
                 save(project)
                 rerun_notice(f"Changed to a {BOOK_TYPES[new_type]['label'].lower()} photobook.")
     with st.expander("Delete this photobook", expanded=False):
+        proto_note("delete")
         confirm = st.checkbox("Permanently delete its saved photos and story text", key="delete_confirm")
         if st.button("Delete photobook", disabled=not confirm, type="secondary", use_container_width=True):
             delete_project(ROOT, st.session_state["active_project"])
@@ -265,6 +337,8 @@ with st.sidebar:
 if notice := st.session_state.pop("flash_notice", ""):
     st.success(notice)
 
+proto_banner()
+
 # ------------------------- Choose a photobook type -------------------------
 choosing = st.session_state.get("choosing_type") or (not project.get("book_type") and not project["photos"])
 if choosing:
@@ -272,12 +346,15 @@ if choosing:
                 '<p class="ls-tagline">Your memories, gathered from everywhere and told as the journey they are.</p>',
                 unsafe_allow_html=True)
     h1, h2, h3 = st.columns(3)
-    for col, cls, icon, head, sub in (
-            (h1, "ls-step1", "🔗", "Link your accounts", "OneDrive, Google Photos and uploads"),
-            (h2, "ls-step2", "👁", "Each memory is understood", "When, where and what happened"),
-            (h3, "ls-step3", "✨", "Ask for a story", "Relive a trip, a year or a milestone")):
+    for col, cls, icon, head, sub, marker in (
+            (h1, "ls-step1", "🔗", "Link your accounts", "OneDrive, Google Photos and uploads",
+             proto_badge("accounts") and (proto_badge("accounts") +
+                                          ' <span style="font-size:.75rem">uploads only in the prototype</span>')),
+            (h2, "ls-step2", "👁", "Each memory is understood", "When, where and what happened", ""),
+            (h3, "ls-step3", "✨", "Ask for a story", "Relive a trip, a year or a milestone", "")):
         col.markdown(f'<div class="ls-card"><span class="ls-icon {cls}">{icon}</span><b>{head}</b>'
-                     f'<div class="ls-sub" style="margin-left:42px">{sub}</div></div>', unsafe_allow_html=True)
+                     f'<div class="ls-sub" style="margin-left:42px">{sub}'
+                     f'{"<br>" + marker if marker else ""}</div></div>', unsafe_allow_html=True)
     st.write("")
     st.subheader("1 · Give your photobook a title")
     t1, t2 = st.columns(2)
@@ -383,12 +460,19 @@ if step == 1:
                ("📷", "Instagram", "Instagram data download", False),
                ("📅", "Mail & calendar", "Microsoft Graph", False)]
     for col, (icon, name, via, live) in zip(st.columns(len(sources)), sources):
+        plan = html.escape(SOURCE_PLANS.get(name, ""), quote=True)
         badge = '<span class="ls-badge ls-live">Available</span>' if live else \
-                '<span class="ls-badge ls-planned">Planned</span>'
+                f'<span class="ls-badge ls-planned" title="{plan}" style="cursor:help">Planned</span>'
+        how = (f'<div class="ls-via" style="margin-top:4px;font-style:italic">{html.escape(SOURCE_PLANS[name])}</div>'
+               if notes_on() and name in SOURCE_PLANS else "")
         col.markdown(f'<div class="ls-source"><div style="font-size:1.4rem">{icon}</div>'
-                     f'<div class="ls-name">{name}</div><div class="ls-via">{via}</div>{badge}</div>',
+                     f'<div class="ls-name">{name}</div><div class="ls-via">{via}</div>{badge}{how}</div>',
                      unsafe_allow_html=True)
-    st.caption("This prototype supports uploads. Account connectors are part of the full Life Story design.")
+    if notes_on():
+        st.write("")
+        proto_note("uploads")
+    else:
+        st.caption("This prototype supports uploads. Account connectors are part of the full Life Story design.")
     if project["book_type"] == "travel":
         st.caption("📍 Tip: phone photos usually carry their location, which puts them straight on the map.")
     elif project["book_type"] == "business":
@@ -443,12 +527,19 @@ if step == 2:
     st.markdown('<div class="ls-kicker">Enrich</div>', unsafe_allow_html=True)
     st.subheader("Each memory is understood")
     e1, e2, e3 = st.columns(3)
-    e1.markdown('<div class="ls-card"><b>📍 When & where</b><div class="ls-sub">From the photo\'s camera data, '
-                'or a place AI suggests from clear clues. You confirm it.</div></div>', unsafe_allow_html=True)
-    e2.markdown('<div class="ls-card"><b>👁 Photo insights</b><div class="ls-sub">AI describes only what is visible. '
-                'It never identifies people.</div></div>', unsafe_allow_html=True)
+    e1.markdown(f'<div class="ls-card"><b>📍 When & where</b>{proto_badge("when_where")}<div class="ls-sub">'
+                'From the photo\'s camera data, or a place AI suggests from clear clues. You confirm it.</div></div>',
+                unsafe_allow_html=True)
+    e2.markdown(f'<div class="ls-card"><b>👁 Photo insights</b>{proto_badge("insights")}<div class="ls-sub">'
+                'AI describes only what is visible. It never identifies people.</div></div>', unsafe_allow_html=True)
     e3.markdown('<div class="ls-card"><b>💬 Your words</b><div class="ls-sub">Names, places and what it meant. '
                 'These are what the story is built from.</div></div>', unsafe_allow_html=True)
+    if notes_on():
+        st.write("")
+        f1, f2, f3 = st.columns(3)
+        proto_note("when_where", f1)
+        proto_note("insights", f2)
+        proto_note("more_media", f3)
     st.write("")
     if not photos_all:
         st.info("No photos yet. Go back to step **1 · Link & bring in**, or load a demo from the sidebar.")
@@ -496,8 +587,12 @@ if step == 2:
             else:
                 rerun_notice(f"AI suggested a place for {found} of {len(unlocated)} photos. "
                              "Open each photo below to accept or dismiss.")
-        if st.button("🔄 Re-check camera data", help="Re-reads dates and locations from the photo files you "
-                     "already uploaded. Your own notes are not changed."):
+        rc_btn, rc_note = st.columns([1, 2.4], vertical_alignment="center")
+        if notes_on():
+            rc_note.markdown(f'<span style="font-size:.8rem;color:#53617B">{proto_badge("recheck").strip()} '
+                             f'{html.escape(NOTES["recheck"]["full"])}</span>', unsafe_allow_html=True)
+        if rc_btn.button("🔄 Re-check camera data", help="Re-reads dates and locations from the photo files you "
+                         "already uploaded. Your own notes are not changed."):
             found = reread_metadata(ROOT, project)
             for p in project["photos"]:
                 autofill_from_camera(p)
@@ -648,6 +743,7 @@ if step == 3:
         request = st.text_input("What story would you like?", value=project.get("story_request", ""),
                                 placeholder=btype["request_hint"])
         st.caption("Ideas: " + " · ".join(f"*{x}*" for x in btype["examples"]))
+        proto_note("story_select")
         years = sorted({y for p in photos_all if (y := photo_year(p))})
         year_range = None
         if len(years) >= 2:
@@ -689,6 +785,7 @@ if step == 3:
     with b1:
         st.markdown("**Quick draft** (no AI)")
         st.caption(f"Arranges your own notes into chapters by {GROUPING_TEXT[btype['grouping']]}. Nothing is invented.")
+        proto_note("quick_draft")
         if st.button("Write a draft", use_container_width=True, type="primary", disabled=not matching):
             project["chapters"] = local_chapters(project, matching)
             save(project)
@@ -696,6 +793,7 @@ if step == 3:
             rerun_notice("Draft ready. Here it is. Go back to step 3 to refine it.")
     with b2:
         st.markdown("**Story writer** (AI)")
+        proto_note("writer")
         consent = st.checkbox("Send the notes for these memories to OpenAI to write the story.",
                               key="story_consent")
         share_exif = st.checkbox("Include camera dates", value=False)
@@ -734,6 +832,7 @@ if step == 3:
 
     st.divider()
     st.markdown("#### Refine the story")
+    proto_note("versions")
     chapters = project.get("chapters", [])
     if not chapters:
         st.caption("No chapters yet.")
@@ -911,6 +1010,7 @@ VIEWS = {"travels": ("🌏 Travels", view_travels), "timeline": ("🕒 Timeline"
 if step == 4:
     st.markdown('<div class="ls-kicker">Experience</div>', unsafe_allow_html=True)
     st.subheader(project.get("title") or "Your story")
+    proto_note("views")
     if project.get("story_request"):
         st.caption(f"“{project['story_request']}”")
     ordered = [by_id[i] for i in story_photo_ids(project) if i in by_id]
@@ -946,6 +1046,7 @@ if step == 5:
         with col_pdf.container(border=True):
             st.markdown("**📄 Printable PDF**")
             st.caption("An A4 book to print, or attach to an email.")
+            proto_note("pdf")
             if st.button("Prepare PDF", type="primary", use_container_width=True):
                 try:
                     with st.spinner("Building your illustrated book..."):
@@ -986,6 +1087,7 @@ if step == 5:
                 st.caption(f"Ready · {len(html_doc.encode('utf-8')) / 1024:.0f} KB · photos included in the file")
         with st.container(border=True):
             st.markdown("**🔗 Share link**")
+            proto_note("share")
             st.caption("A link to a read-only version of this story in this app: the interactive book, "
                        "timeline and map, with nothing editable. Anyone with the link can view it.")
             if project.get("share_enabled") and project.get("share_token"):
@@ -1042,6 +1144,7 @@ else:
     next_col.caption("🎉 That's the whole journey. Use the steps above to go back and change anything.")
 
 st.divider()
+proto_note("storage")
 st.caption("Privacy: photos and story text are stored on this computer under the data/ folder. Only the AI buttons "
            "send reduced images or text to OpenAI. Photos are sent without their camera data; locations are only "
            "sent if you tick that option in the story writer. Check all AI-written text before sharing.")

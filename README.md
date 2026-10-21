@@ -30,6 +30,19 @@ The app walks you through five numbered steps (a step bar at the top, a short no
 | 4 · Story views | Experience | **Travels** world map, timeline, photo strip, read view |
 | 5 · Book | Share | A4 PDF **and** an interactive web book (one .html file) |
 
+## What's prototype and what changes
+
+The app marks, in the UI, which parts are the intended experience and which are only here for the prototype. A sidebar toggle, **Show what changes in the full app** (on by default), controls the markers; turn it off for a clean walkthrough.
+
+| Marker | Meaning | Examples |
+|---|---|---|
+| 🧪 **Prototype only** | Only here so the prototype can run or be demoed. Removed in the full app. | Fictional demos, pasting an OpenAI key/model, Re-check camera data, Write a draft (no AI) |
+| 🔁 **Changes in full app** | Works here as a simplified stand-in; built differently in the full app. | Local storage, uploads and the 30-photo limit, built-in place list, OpenAI API, year/place filters instead of the story agent, Streamlit/pydeck views, A4 PDF, share link |
+| 🗓️ **Planned** | Not in the prototype yet. | Linking accounts, voice notes/video/meaning search, version history and approval, content safety |
+| *(unmarked)* | The experience as intended. | Photobook types, the five steps, your own words, AI suggests/you confirm, chapter editing, story views |
+
+A banner at the top of each page carries the standard caveat, each marked feature has a short note (**Here** / **Full app**), and the sidebar **Prototype guide** lists everything in one place. All the wording lives in `storybook/prototype_notes.py`, so it can be changed in one place to match the presentation.
+
 ## Start it
 
 Requires **Python 3.10+**. In a terminal:
@@ -141,9 +154,11 @@ storybook/book_html.py    Interactive web book export (single HTML file)
 storybook/book_types.py   Photobook types: prompts, grouping, main view, cover label
 storybook/travel.py       Travels: built-in place list, trip grouping, chapters from trips
 storybook/demo.py         Synthetic family and travel demo projects
+storybook/prototype_notes.py  Prototype markers: what's prototype-only, what changes, what's planned
 requirements.txt          Install requirements
 .streamlit/config.toml    Theme and upload size
 tests/test_workflow.py     Offline workflow tests
+tests/test_prototype_notes.py  Checks every marker in the app has its wording
 ```
 
 ## Next iteration (after stakeholder feedback)
